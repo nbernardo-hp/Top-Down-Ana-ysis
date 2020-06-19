@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Data;
+using System.IO;
 using System.Windows.Forms;
 
 namespace StockTopDownAnalysis
@@ -8,6 +9,7 @@ namespace StockTopDownAnalysis
     public partial class frmTopDownAnalysis : Form
     {
         int tab = 0; //0 denotes Markets tab, 1 denotes Sectors tab
+        bool[] colsLoaded = { false, false };//used to indicate if the column configuration has be loaded from a .xml file. Index 0 = Markets, 1 = Sectors
         bool saved = true; //used to determine if the save before exit dialog should appear
         double marketsRating = 0;
         double sectorsRating = 0;
@@ -37,10 +39,8 @@ namespace StockTopDownAnalysis
                 populateDictionary(dt, 'M');
                 dt = dbAccess.selectAll('S');
                 populateDictionary(dbAccess.selectAll('S'), 'S');
-                createColumns(dgvMarkets);
-                createColumns(dgvSectors, true);
-                populateMarkets();
-                populateSectors();
+                configureDataGridView();
+                configureDataGridView(true);
                 dgvMarkets.SelectionMode = DataGridViewSelectionMode.FullRowSelect;
                 dgvSectors.SelectionMode = DataGridViewSelectionMode.FullRowSelect;
             } catch (Exception ex)
@@ -48,6 +48,45 @@ namespace StockTopDownAnalysis
                 errorMessage(ex);
             }
         }//end frmTopDownAnalysis_Load
+
+        /// <summary>
+        /// Configures the DataGridViews.  If no column configuration is provided for the DataGridView
+        /// calls the createColumns(DataGridView dgv, bool isSectors = false) function.  Else calls the
+        /// createColumns(DataGridView dgv, List<string> cols) function
+        /// </summary>
+        private void configureDataGridView(bool isSectors = false)
+        {
+            try
+            {
+                List<string> cols = loadColumnConfiguration(isSectors);
+                if(!isSectors)
+                {
+                    if(colsLoaded[0])
+                    {
+                        createColumns(dgvMarkets, cols);
+                        populateDataGridView(cols, dgvMarkets);
+                    } else
+                    {
+                        createColumns(dgvMarkets);
+                        populateMarkets();
+                    }//end nested if-else
+                } else
+                {
+                    if(colsLoaded[1])
+                    {
+                        createColumns(dgvSectors, cols);
+                        populateDataGridView(cols, dgvSectors, true);
+                    } else
+                    {
+                        createColumns(dgvSectors, true);
+                        populateSectors();
+                    }//end nested if-else
+                }//end if-else
+            } catch (Exception ex)
+            {
+                errorMessage(ex);
+            }//end try-catch
+        }//end configureDataGridView
 
         private void frmTopDownAnalysis_FormClosing(object sender, FormClosingEventArgs e)
         {
@@ -160,7 +199,16 @@ namespace StockTopDownAnalysis
 
         private void tsbNotes_Click(object sender, EventArgs e)
         {
-            //TODO
+            string symbol = "";
+            if(tab == 0)
+            {
+                symbol = dgvMarkets.SelectedRows[0].Cells["SYMBOL"].Value.ToString();
+                frmNotes frm = new frmNotes(markets[symbol].getNotes(), markets[symbol].getName());
+            } else
+            {
+                symbol = dgvSectors.SelectedRows[0].Cells["SYMBOL"].Value.ToString();
+                frmNotes frm = new frmNotes(sectors[symbol].getNotes(), sectors[symbol].getName());
+            }
         }//end tsbNotes_Click
 
         /// <summary>
@@ -238,14 +286,15 @@ namespace StockTopDownAnalysis
                         dbAccess.deleteRow(key);
                     }//end if-elseif-else
 
-                    XmlData xmlData = new XmlData();
-                    xmlData.createBackupXml(markets, sectors);
-
                     saved = true;
                 }//end foreach
             } catch (Exception ex)
             {
                 errorMessage(ex);
+            } finally
+            {
+                XmlData xmlData = new XmlData();
+                xmlData.createBackupXml(markets, sectors);
             }
         }//end tsmSave_Click
 
@@ -306,12 +355,13 @@ namespace StockTopDownAnalysis
             if (res == DialogResult.OK)
             {
                 cols = displayCols.getColumns();
-                dgv.Rows.Clear();
+                createColumns(dgv, cols);
+                /*dgv.Rows.Clear();
                 dgv.Columns.Clear();
                 foreach (string c in cols)
                 {
                     dgv.Columns.Add(c, c);
-                }//end foreach
+                }//end foreach*/
                 populateDataGridView(cols, dgv, (table == "Market" ? false : true));
                 saveColumnConfiguration(cols, (table == "Market" ? 0 : 1));
             }//end if
@@ -357,7 +407,7 @@ namespace StockTopDownAnalysis
         {
             List<string> cols = getColumns(dgvSectors);
             showConfigureForm(cols, "Sector", dgvSectors);
-        }//end tsmMarketDisplayCols_Click
+        }//end tsmSectorsDisplayCols_Click
 
         /// <summary>
         /// Populates a temporary dictionary with initial values for the markets and sectors dictionary's.
@@ -486,6 +536,15 @@ namespace StockTopDownAnalysis
                 changes[symbol] = (val != 2 ? 1 : 2);
             }//end if-else
         }//end changeStatus
+        private void createColumns(DataGridView dgv, List<string> cols)
+        {
+            dgv.Rows.Clear();
+            dgv.Columns.Clear();
+            foreach(string c in cols)
+            {
+                dgv.Columns.Add(c, c);
+            }//end foreach
+        }//end createColumns
 
         /// <summary>
         /// Adds the columns to the DataGridViews
@@ -577,6 +636,7 @@ namespace StockTopDownAnalysis
                     }
                     ri++;
                 }//end foreach
+                calculateOverallRating(ref marketsRating);
             } else
             {
                 foreach(var kvp in sectors)
@@ -588,6 +648,7 @@ namespace StockTopDownAnalysis
                     }
                     ri++;
                 }//end foreach
+                calculateOverallRating(ref sectorsRating, true);
             }//end if-else
         }//end populateDataGridView
 
@@ -833,16 +894,6 @@ namespace StockTopDownAnalysis
         }
 
         /// <summary>
-        /// Saves the calculation preferences that will be loaded
-        /// </summary>
-        /// <param name="sender"></param>
-        /// <param name="e"></param>
-        private void tsmSaveSettings_Click(object sender, EventArgs e)
-        {
-
-        }//end tsmSaveSettings_Click
-
-        /// <summary>
         /// Instantiates a new XmlData class to return the dictionary of each item saved in the preferences
         /// If the dictionary contains the symbol, sets the value of usedInCalculation to the value in the
         /// returned dictionary.
@@ -872,6 +923,11 @@ namespace StockTopDownAnalysis
             }
         }//end getCalcPreferences
 
+        /// <summary>
+        /// Saves the column configuration preferences for each DataGridView in a .xml file.
+        /// </summary>
+        /// <param name="cols"></param>
+        /// <param name="table"></param>
         private void saveColumnConfiguration(List<string> cols, int table)
         {
             try
@@ -883,5 +939,29 @@ namespace StockTopDownAnalysis
                 errorMessage(ex);
             }
         }//end saveColumnConfiguration
+
+        /// <summary>
+        /// Loads the column configuration of each DataGridView if it exists.
+        /// </summary>
+        private List<string> loadColumnConfiguration(bool isSectors = false)
+        {
+            List<string> cols = new List<string>();
+            string path = AppDomain.CurrentDomain.BaseDirectory + @"\preferences\";
+            if (Directory.Exists(path))
+            {
+                XmlData xmlData = new XmlData();
+
+                string file = (isSectors ? "sectorCols.xml" : "marketCols.xml");
+                int i = (isSectors ? 1 : 0);
+
+                if(File.Exists(Path.Combine(path,file)))
+                {
+                    cols = xmlData.loadColumnPreferences(i);
+                    colsLoaded[0] = true;
+                }//end nested if
+            }//end if
+
+            return cols;
+        }//end loadColumnConfiguration
     }//end frmTopDownAnalysis
 }
