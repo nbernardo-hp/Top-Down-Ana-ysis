@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.Drawing;
 using System.Windows.Forms;
 
@@ -9,6 +10,8 @@ namespace StockTopDownAnalysis
         //Used to determine if there is an error when attempting to Save.
         bool error = false;
         bool market = false;
+
+        List<Note> notes = new List<Note>();
 
         /// <summary>
         /// One argument constructor.  Sets the form name and calls populateFields function
@@ -42,22 +45,51 @@ namespace StockTopDownAnalysis
         /// <param name="sma20"></param>
         /// <param name="chart"></param>
         /// <param name="items"></param>
+        /// <param name="notes"></param>
         /// <param name="finviz"></param>
-        public frmIndividualStock(string table, string name, string symbol, string sma200, string sma50, string sma20, string chart, string items, int finviz = -1)
+        public frmIndividualStock(string table, string name, string symbol, string sma200, string sma50, string sma20, string chart, string items, List<Note> notes, int finviz = -1)
         {
             InitializeComponent();
-            this.Text = String.Format("Edit {0}({1})", name, symbol);
-            populateFields(name, symbol, sma200, sma50, sma20, chart, items, finviz);
-            if (table == "Market")
+            try
             {
-                lblFinvizRank.Visible = false;
-                txtFinvizRank.Visible = false;
-                market = true;
-            }
+                this.Text = String.Format("Edit {0}({1})", name, symbol);
+                populateFields(name, symbol, sma200, sma50, sma20, chart, items, finviz);
+                if (table == "Market")
+                {
+                    lblFinvizRank.Visible = false;
+                    txtFinvizRank.Visible = false;
+                    market = true;
+                }
 
-            txtName.Enabled = false;
-            txtSymbol.Enabled = false;
+                txtName.Enabled = false;
+                txtSymbol.Enabled = false;
+                this.notes = notes;
+                populateListBox();
+            }
+            catch (Exception ex)
+            {
+                frmTopDownAnalysis.errorMessage(ex);
+            }
         }//end 9 argument constructor
+
+        //Clears and populates lstNotes with the notes for the stock
+        private void populateListBox()
+        {
+            try
+            {
+                lstNotes.Items.Clear();
+                if(notes != null)
+                {
+                    foreach (Note n in notes)
+                    {
+                        lstNotes.Items.Add(n.getDateString() + " at " + n.getTimeString() + ": " + n.getViewDisplay());
+                    }//end foreach
+                }
+            } catch (Exception ex)
+            {
+                frmTopDownAnalysis.errorMessage(ex);
+            }
+        }//end populateListBox
 
         /// <summary>
         /// Resets the error flag to false to allow the form to close since the action has been cancelled
@@ -158,7 +190,7 @@ namespace StockTopDownAnalysis
             {
                 Market res = new Market(txtName.Text, txtSymbol.Text, cmbSMA200.SelectedItem.ToString(),
                 cmbSMA50.SelectedItem.ToString(), cmbSMA20.SelectedItem.ToString(), cmbChartPattern.SelectedItem.ToString(),
-                cmbUnexpectedItems.SelectedItem.ToString(), 0.0);
+                cmbUnexpectedItems.SelectedItem.ToString(), notes, 0.0);
                 res.calculateIndividualRating();
                 return res;
             } catch (Exception ex)
@@ -178,7 +210,7 @@ namespace StockTopDownAnalysis
             try
             {
                 int finviz = int.Parse(txtFinvizRank.Text);
-                Sector res = new Sector(txtName.Text, txtSymbol.Text, cmbSMA200.SelectedItem.ToString(), cmbSMA50.SelectedItem.ToString(), cmbSMA20.SelectedItem.ToString(), cmbChartPattern.SelectedItem.ToString(), cmbUnexpectedItems.SelectedItem.ToString(), finviz, 0.0);
+                Sector res = new Sector(txtName.Text, txtSymbol.Text, cmbSMA200.SelectedItem.ToString(), cmbSMA50.SelectedItem.ToString(), cmbSMA20.SelectedItem.ToString(), cmbChartPattern.SelectedItem.ToString(), cmbUnexpectedItems.SelectedItem.ToString(), notes, finviz, 0.0);
                 return res;
             } catch(Exception ex)
             {
@@ -188,5 +220,62 @@ namespace StockTopDownAnalysis
             return null;
         }//end getSector();
 
+        private void lstNotes_SelectedIndexChanged(object sender, EventArgs e)
+        {
+            try
+            {
+                if (lstNotes.SelectedIndex > -1)
+                {
+                    btnEdit.Enabled = true;
+                    btnDelete.Enabled = true;
+                }
+                else
+                {
+                    btnEdit.Enabled = false;
+                    btnDelete.Enabled = false;
+                }//end if-else
+            } catch (Exception ex)
+            {
+                frmTopDownAnalysis.errorMessage(ex);
+            }
+        }//end lstNotes_SelectedIndexChanged
+
+        private void btnAdd_Click(object sender, EventArgs e)
+        {
+            displayNotes(txtName.Text);
+        }//end btnAdd_Click
+
+        private void btnEdit_Click(object sender, EventArgs e)
+        {
+            displayNotes(txtName.Text, lstNotes.SelectedIndex);
+        }//end btnEdit_Click
+
+        private void displayNotes(string title, int i = -1)
+        {
+            frmNotes frm = new frmNotes(notes, title, i);
+            DialogResult res = frm.ShowDialog();
+
+            if(res == DialogResult.OK)
+            {
+                notes = frm.getNotes();
+                populateListBox();
+            }//end if
+
+        }//end displayIndividualNote
+
+        //Deletes a note from the ListBox and object
+        private void btnDelete_Click(object sender, EventArgs e)
+        {
+            try
+            {
+                int i = lstNotes.SelectedIndex;
+                notes.RemoveAt(i);
+                lstNotes.Items.RemoveAt(i);
+                populateListBox();
+            } catch (Exception ex)
+            {
+                frmTopDownAnalysis.errorMessage(ex);
+            }
+        }//end btnDelete_Click
     }//end frmIndividualStock
 }

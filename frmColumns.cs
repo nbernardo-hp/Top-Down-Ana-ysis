@@ -36,11 +36,6 @@ namespace StockTopDownAnalysis
             }
         }//end 2 argument constructor
 
-        private void frmColumns_Load(object sender, EventArgs e)
-        {
-            //TODO
-        }//end frmColumns_Load
-
         /// <summary>
         /// Removes a list item from lstAllCols and adds it to lstMyCols
         /// </summary>
@@ -168,6 +163,8 @@ namespace StockTopDownAnalysis
                 btnUp.Enabled = (lstMyCols.SelectedIndex > 0 ? true : false);
                 btnDown.Enabled = (lstMyCols.SelectedIndex < lstMyCols.Items.Count - 1 ? true : false);
             }
+
+            btnRemove.Enabled = (lstMyCols.SelectedItem.ToString() == "SYMBOL" ? false : true);
         }//end enableButtons
 
         /// <summary>
