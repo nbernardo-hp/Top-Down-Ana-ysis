@@ -159,12 +159,10 @@ namespace StockTopDownAnalysis
                 btnDown.Enabled = false;
             } else
             {
-                btnRemove.Enabled = true;
+                btnRemove.Enabled = (lstMyCols.SelectedItem.ToString() == "SYMBOL" ? false : true);
                 btnUp.Enabled = (lstMyCols.SelectedIndex > 0 ? true : false);
                 btnDown.Enabled = (lstMyCols.SelectedIndex < lstMyCols.Items.Count - 1 ? true : false);
             }
-
-            btnRemove.Enabled = (lstMyCols.SelectedItem.ToString() == "SYMBOL" ? false : true);
         }//end enableButtons
 
         /// <summary>

@@ -1,11 +1,8 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
 using System.Data;
-using System.Data.Sql;
 using System.Data.SqlClient;
+using System.Xml.Serialization;
 
 namespace StockTopDownAnalysis
 {
@@ -30,12 +27,12 @@ namespace StockTopDownAnalysis
             dt = new DataTable();
             conn = new SqlConnection(getConnectionString());
 
-            comm = "SELECT NAME, SYMBOL, SMA200, SMA50, SMA20, CHART_PATTERN, UNEXPECTED_ITEMS, INDIVIDUAL_RATING, ";
+            comm = "SELECT NAME, SYMBOL, SMA200, SMA50, SMA20, CHART_PATTERN, UNEXPECTED_ITEMS, INDIVIDUAL_RATING";
             if(type != 'M')
             {
-                comm += "FINVIZ_RANK, ";
+                comm += ", FINVIZ_RANK";
             }
-            comm += "NOTES FROM STOCKS WHERE TYPE=@type";
+            comm += " FROM STOCKS WHERE TYPE=@type";
 
             conn.Open();
             cmd = new SqlCommand(comm, conn);
@@ -164,5 +161,34 @@ namespace StockTopDownAnalysis
 
             return (temp.Tables.Count > 0 ? temp.Tables[0].Rows[0] : null);
         }//end selectFrom
+
+        public List<Note> selectNotes(string symbol)
+        {
+            List<Note> res = new List<Note>();
+            dt = new DataTable();
+            conn = new SqlConnection(getConnectionString());
+            comm = "SELECT * FROM NOTES WHERE SYMBOL=@symbol";
+            conn.Open();
+            cmd = new SqlCommand(comm, conn);
+            cmd.Parameters.AddWithValue("@symbol", symbol);
+            da = new SqlDataAdapter(cmd);
+            da.Fill(dt);
+            conn.Close();
+
+            foreach(DataRow dr in dt.Rows)
+            {
+                string[] note = dr.Field<string>("NOTE").Split(':');
+                string[] date = dr.Field<string>("DATE").Split('-');
+                string[] time = dr.Field<string>("TIME").Split(':');
+                res.Add(new Note(note, new DateTime(int.Parse(date[0]), int.Parse(date[1]), int.Parse(date[2])), new DateTime(1,1,1, int.Parse(time[0]), int.Parse(time[1]),0)));
+            }//end foreach
+
+            return res;
+        }//end selectNotes
+
+        public void updateNotes()
+        {
+
+        }//end updateNotes
     }//end DatabaseAccess
 }

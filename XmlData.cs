@@ -2,8 +2,10 @@
 using System.Collections.Generic;
 using System.Linq;
 using System.IO;
+using System.Runtime.Serialization;
 using System.Xml;
 using System.Xml.Linq;
+using System.Xml.Serialization;
 
 namespace StockTopDownAnalysis
 {
@@ -33,7 +35,7 @@ namespace StockTopDownAnalysis
         public void createBackupXml(Dictionary<string, Market> markets, Dictionary<string, Sector> sectors)
         {
             DatabaseAccess dbAccess = new DatabaseAccess();
-            filePath = AppDomain.CurrentDomain.BaseDirectory + @"\backup\save\";
+            filePath = AppDomain.CurrentDomain.BaseDirectory + @"\backup\";
             createPath(filePath);
             fileName = String.Format("backup({0}-{1}-{2}).xml", DateTime.Today.Month, DateTime.Today.Day, DateTime.Today.Year);
 
@@ -42,9 +44,38 @@ namespace StockTopDownAnalysis
                 writer.WriteStartDocument();
                 writer.WriteStartElement("STOCKS");
 
-                foreach(var kvp in markets)
+                foreach (var kvp in markets)
                 {
                     writer.WriteStartElement("MARKET");
+                        writer.WriteAttributeString("NAME", kvp.Value.getName());
+                        writer.WriteAttributeString("SYMBOL", kvp.Value.getSymbol());
+                        writer.WriteAttributeString("SMA200", kvp.Value.getSMA200());
+                        writer.WriteAttributeString("SMA50", kvp.Value.getSMA50());
+                        writer.WriteAttributeString("SMA20", kvp.Value.getSMA20());
+                        writer.WriteAttributeString("CHART_PATTERN", kvp.Value.getChartPattern());
+                        writer.WriteAttributeString("UNEXPECTED_ITEMS", kvp.Value.getUnexpectedItems());
+                        writer.WriteAttributeString("FINVIZ_RANK", null);
+                        writer.WriteAttributeString("INDIVIDUAL_RATING", kvp.Value.getIndividualRating().ToString());
+                   
+                        writer.WriteStartElement("NOTES");
+                        int j = 0;
+                            if(kvp.Value.getNotes() == null || kvp.Value.getNotes().Count() < 1)
+                            {
+                                writer.WriteStartElement("N"+j.ToString());
+                                    writer.WriteAttributeString("NULL",null);
+                                writer.WriteEndElement();
+                            } else
+                            {
+                                backupNotesXml(kvp.Value.getNotes());
+                            }
+                        writer.WriteEndElement();
+
+                    writer.WriteEndElement();
+                }
+
+                foreach (var kvp in sectors)
+                {
+                 writer.WriteStartElement("SECTOR");
                     writer.WriteAttributeString("NAME", kvp.Value.getName());
                     writer.WriteAttributeString("SYMBOL", kvp.Value.getSymbol());
                     writer.WriteAttributeString("SMA200", kvp.Value.getSMA200());
@@ -54,30 +85,56 @@ namespace StockTopDownAnalysis
                     writer.WriteAttributeString("UNEXPECTED_ITEMS", kvp.Value.getUnexpectedItems());
                     writer.WriteAttributeString("FINVIZ_RANK", null);
                     writer.WriteAttributeString("INDIVIDUAL_RATING", kvp.Value.getIndividualRating().ToString());
+
+                    writer.WriteStartElement("NOTES");
+                    int j = 0;
+                    if (kvp.Value.getNotes() == null || kvp.Value.getNotes().Count() < 1)
+                    {
+                        writer.WriteStartElement("N" + j.ToString());
+                        writer.WriteAttributeString("NULL", null);
+                        writer.WriteEndElement();
+                    }
+                    else
+                    {
+                        backupNotesXml(kvp.Value.getNotes());
+                    }
                     writer.WriteEndElement();
-                }
 
-                foreach(var kvp in sectors)
-                {
-                    writer.WriteStartElement("SECTOR");
-                    writer.WriteAttributeString("NAME", kvp.Value.getName());
-                    writer.WriteAttributeString("SYMBOL", kvp.Value.getSymbol());
-                    writer.WriteAttributeString("SMA200", kvp.Value.getSMA200());
-                    writer.WriteAttributeString("SMA50", kvp.Value.getSMA50());
-                    writer.WriteAttributeString("SMA20", kvp.Value.getSMA20());
-                    writer.WriteAttributeString("CHART_PATTERN", kvp.Value.getChartPattern());
-                    writer.WriteAttributeString("UNEXPECTED_ITEMS", kvp.Value.getUnexpectedItems());
-                    writer.WriteAttributeString("FINVIZ_RANK", kvp.Value.getFinvizRank().ToString());
-                    writer.WriteAttributeString("INDIVIDUAL_RATING", kvp.Value.getIndividualRating().ToString());
-                    writer.WriteEndElement();
-                }
+                 writer.WriteEndElement();
+             }
 
-                writer.WriteEndElement();
-                writer.WriteEndDocument();
+             writer.WriteEndElement();
+             writer.WriteEndDocument();
 
-                writer.Close();
+             writer.Close();
+                
             }
         }//end createBackupXml
+
+        /// <summary>
+        /// Function to create the Xml notes for each Market or Sector
+        /// </summary>
+        /// <param name="notes"></param>
+        private void backupNotesXml(List<Note> notes)
+        {
+            int j = 0;
+            foreach (Note note in notes)
+            {
+                writer.WriteStartElement("N" + j.ToString());
+                    writer.WriteAttributeString("DATE", note.getDateString());
+                    writer.WriteAttributeString("TIME", note.getTimeString());
+                    writer.WriteStartElement("LINE");
+                        int i = 0;
+                        foreach (string n in note.getNote())
+                        {
+                            writer.WriteAttributeString("L" + i.ToString(), n);
+                            i++;
+                        }
+                    writer.WriteEndElement();
+                writer.WriteEndElement();
+                j++;
+            }
+        }//end backupNoteXml
 
         /// <summary>
         /// Saves the calculation preferences to a .xml file.
@@ -158,9 +215,8 @@ namespace StockTopDownAnalysis
         public void saveColumnPreferences(List<string> cols, int table)
         {
             createPath(filePath);
-            fileName = (table == 0 ? "marketCols.xml" : "sectorsCols.xml");
+            fileName = (table == 0 ? "marketCols.xml" : "sectorCols.xml");
 
-            int i = 0;
             using(writer = XmlWriter.Create(Path.Combine(filePath,fileName)))
             {
                 writer.WriteStartDocument();
@@ -174,10 +230,16 @@ namespace StockTopDownAnalysis
             }//end using
         }//end saveColumnPreferences
 
+        /// <summary>
+        /// Loads the column preferences saved in the .xml file associated with the provided
+        /// DataGridView indicator. 0 = Markets, 1 = Sectors
+        /// </summary>
+        /// <param name="table"></param>
+        /// <returns></returns>
         public List<string> loadColumnPreferences(int table)
         {
             List<string> res = new List<string>();
-            fileName = (table == 0 ? "marketCols.xml" : "sectorsCols.xml");
+            fileName = (table == 0 ? "marketCols.xml" : "sectorCols.xml");
 
             doc = new XmlDocument();
             doc.Load(Path.Combine(filePath, fileName));
