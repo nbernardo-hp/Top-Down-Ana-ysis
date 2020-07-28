@@ -1,66 +1,72 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
 using System.Data;
+using System.Data.Sql;
 using System.Data.SqlClient;
-using System.Xml.Serialization;
 
-namespace StockTopDownAnalysis
+namespace TopDownAnalysis
 {
     class DatabaseAccess
     {
-        private SqlConnection conn;
         private string comm;
+        private SqlConnection conn;
         private SqlCommand cmd;
         private SqlDataAdapter da;
         private DataTable dt;
 
+        /// <summary>
+        /// Gets the connection string for dbTopDownAnalysis and returns it to the calling program
+        /// </summary>
+        /// <returns></returns>
         private string getConnectionString() { return Properties.Settings.Default.dbTopDownAnalysisConnectionString; }
 
         /// <summary>
-        /// Select every entry in the database that has the provided type.  If the char is not for the market
-        /// add an additional column to the select command.Return the datatable to the calling program
+        /// Selects all the information in STOCKS and returns it to the calling program as a DataTable
         /// </summary>
-        /// <param name="type"></param>
         /// <returns></returns>
-        public DataTable selectAll(char type)
+        public DataTable selectAllFromStocks()
         {
             dt = new DataTable();
+
             conn = new SqlConnection(getConnectionString());
-
-            comm = "SELECT NAME, SYMBOL, SMA200, SMA50, SMA20, CHART_PATTERN, UNEXPECTED_ITEMS, INDIVIDUAL_RATING";
-            if(type != 'M')
-            {
-                comm += ", FINVIZ_RANK";
-            }
-            comm += " FROM STOCKS WHERE TYPE=@type";
-
+            comm = "SELECT * FROM STOCKS";
             conn.Open();
             cmd = new SqlCommand(comm, conn);
-            cmd.Parameters.AddWithValue("@type", type);
             da = new SqlDataAdapter(cmd);
             da.Fill(dt);
             conn.Close();
 
             return dt;
-        }//end selectAll
+        }//end selectAllFromStocks
 
         /// <summary>
-        /// Inserts a new entry into the STOCKS table
+        /// Selects all the information in the NOTES table and returns a DataTable to the calling function
         /// </summary>
-        /// <param name="stock"></param>
-        /// <param name="finviz"></param>
-        public void insertInto(Globals stock, int finviz = -1)
+        /// <returns></returns>
+        public DataTable selectAllFromNotes()
+        {
+            dt = new DataTable();
+
+            conn = new SqlConnection(getConnectionString());
+            comm = "SELECT * FROM NOTES";
+            conn.Open();
+            cmd = new SqlCommand(comm, conn);
+            da = new SqlDataAdapter(cmd);
+            da.Fill(dt);
+            conn.Close();
+
+            return dt;
+        }//end selectAllFromNotes
+
+
+        public void insertIntoStocks(Stock stock)
         {
             conn = new SqlConnection(getConnectionString());
-
-            comm = "INSERT INTO STOCKS (NAME, SYMBOL, SMA200, SMA50, SMA20, CHART_PATTERN, " +
-                "UNEXPECTED_ITEMS, INDIVIDUAL_RATING, FINVIZ_RANK, TYPE) VALUES (@name, " +
-                "@symbol, @sma200, @sma50, @sma20, @chartPattern, " +
-                "@unexpectedItems, @individualRating, @finvizRank, " +
-                "@type);";
-
+            comm = "INSERT INTO STOCKS (NAME, SYMBOL, SMA200, SMA50, SMA20, CHART_PATTERN, UNEXPECTED_ITEMS, FINVIZ_RANK, INDIVIDUAL_RATING, TYPE) VALUES (@name, @symbol,@sma200,@sma50,@sma20,@chartPattern,@unexpectedItems,@finvizRank,@individualRating,@type)";
             conn.Open();
-
             cmd = new SqlCommand(comm, conn);
             cmd.Parameters.AddWithValue("@name", stock.getName());
             cmd.Parameters.AddWithValue("@symbol", stock.getSymbol());
@@ -69,126 +75,157 @@ namespace StockTopDownAnalysis
             cmd.Parameters.AddWithValue("@sma20", stock.getSMA20());
             cmd.Parameters.AddWithValue("@chartPattern", stock.getChartPattern());
             cmd.Parameters.AddWithValue("@unexpectedItems", stock.getUnexpectedItems());
+            cmd.Parameters.AddWithValue("@finvizRank", stock.getFinvizRank());
             cmd.Parameters.AddWithValue("@individualRating", stock.getIndividualRating());
-            cmd.Parameters.AddWithValue("@finvizRank", finviz);
-
-            if (finviz != -1)
-            {
-                cmd.Parameters.AddWithValue("@type", 'S');
-            } else
-            {
-                cmd.Parameters.AddWithValue("@type", 'M');
-            }
-
+            cmd.Parameters.AddWithValue("@type", stock.getType());
             cmd.ExecuteNonQuery();
-
             conn.Close();
-        }//end insertInto(char)
+        }//end insertIntoStocks
 
         /// <summary>
-        /// Updates the specific row in the database
+        /// Inserts a new row into the NOTES table using the member functions for each note
         /// </summary>
-        /// <param name="stock"></param>
-        /// <param name="finviz"></param>
-        public void updateRow(Globals stock, int finviz = -1)
+        /// <param name="symbol"></param>
+        /// <param name="date"></param>
+        /// <param name="time"></param>
+        /// <param name="lines"></param>
+        public void insertIntoNotes(string symbol, string date, string time, string[] lines)
         {
             conn = new SqlConnection(getConnectionString());
-
-            comm = "UPDATE STOCKS SET SMA200=@sma200, SMA50=@sma50, SMA20=@sma20, CHART_PATTERN=@chartPattern, " +
-                "UNEXPECTED_ITEMS=@unexpectedItems, INDIVIDUAL_RATING=@individualRating, FINVIZ_RANK=@finvizRank " +
-                "WHERE SYMBOL = @symbol";
-
+            comm = "INSERT INTO NOTES (SYMBOL, DATE, TIME, NOTE) VALUES (@symbol, @date, @time, @lines)";
             conn.Open();
-
             cmd = new SqlCommand(comm, conn);
-            cmd.Parameters.AddWithValue("@symbol", stock.getSymbol());
+            cmd.Parameters.AddWithValue("@symbol", symbol);
+            cmd.Parameters.AddWithValue("@date", date);
+            cmd.Parameters.AddWithValue("@time", time);
+            cmd.Parameters.AddWithValue("@lines", String.Join("#", lines));
+            cmd.ExecuteNonQuery();
+            conn.Close();
+        }//end insertIntoNotes(string, string, string, string[])
+
+        public void insertIntoNotes(string symbol, List<Note> notes)
+        {
+            foreach(Note n in notes)
+            {
+                insertIntoNotes(symbol, n.getDateString(), n.getTimeString(), n.getLines());
+            }//end foreach
+        }//end insertIntoNotes(List<Note>)
+        public void updateStocks(string symbol, Stock stock)
+        {
+            conn = new SqlConnection(getConnectionString());
+            comm = "UPDATE STOCKS SET NAME=@name, SMA200=@sma200, SMA50=@sma50, SMA20=@sma20, CHART_PATTERN=@chartPattern, UNEXPECTED_ITEMS=@unexpectedItems, FINVIZ_RANK=@finvizRank, INDIVIDUAL_RATING=@individualRating WHERE SYMBOL=@symbol";
+            conn.Open();
+            cmd = new SqlCommand(comm, conn);
+            cmd.Parameters.AddWithValue("@name", stock.getName());
             cmd.Parameters.AddWithValue("@sma200", stock.getSMA200());
             cmd.Parameters.AddWithValue("@sma50", stock.getSMA50());
             cmd.Parameters.AddWithValue("@sma20", stock.getSMA20());
             cmd.Parameters.AddWithValue("@chartPattern", stock.getChartPattern());
             cmd.Parameters.AddWithValue("@unexpectedItems", stock.getUnexpectedItems());
+            cmd.Parameters.AddWithValue("@finvizRank", stock.getFinvizRank());
             cmd.Parameters.AddWithValue("@individualRating", stock.getIndividualRating());
-            cmd.Parameters.AddWithValue("@finvizRank", finviz);
-
+            cmd.Parameters.AddWithValue("@symbol", stock.getSymbol());
             cmd.ExecuteNonQuery();
-
             conn.Close();
-        }//end updateRow
+        }//end updateStocks
 
         /// <summary>
-        /// Deletes the row with the specified symbol from the Database
+        /// Updates the specific row in the NOTES table with the specific ID.
         /// </summary>
-        /// <param name="symbol"></param>
-        public void deleteRow(string symbol)
+        /// <param name="note"></param>
+        public void updateNotes(Note note)
+        {
+            conn = new SqlConnection(getConnectionString());
+            comm = "UPDATE NOTES SET DATE=@date, TIME=@time, NOTE=@note WHERE ID=@id";
+            conn.Open();
+            cmd = new SqlCommand(comm, conn);
+            cmd.Parameters.AddWithValue("@date", note.getDateString());
+            cmd.Parameters.AddWithValue("@time", note.getTimeString());
+            cmd.Parameters.AddWithValue("@note", String.Join("#", note.getLines()));
+            cmd.Parameters.AddWithValue("@id", note.getId());
+            cmd.ExecuteNonQuery();
+            conn.Close();
+        }//end updateNotes
+
+        public void deleteNote(string symbol, int id)
+        {
+            conn = new SqlConnection(getConnectionString());
+            comm = "DELETE FROM NOTES WHERE ID=@id AND SYMBOL=@symbol";
+            conn.Open();
+            cmd = new SqlCommand(comm, conn);
+            cmd.Parameters.AddWithValue("@id", id);
+            cmd.Parameters.AddWithValue("@symbol", symbol);
+            cmd.ExecuteNonQuery();
+            conn.Close();
+        }//end deleteNote
+        public void deleteStock(string symbol)
         {
             conn = new SqlConnection(getConnectionString());
             comm = "DELETE FROM STOCKS WHERE SYMBOL=@symbol";
-
             conn.Open();
             cmd = new SqlCommand(comm, conn);
             cmd.Parameters.AddWithValue("@symbol", symbol);
             cmd.ExecuteNonQuery();
+            cmd.CommandText = "DELETE FROM NOTES WHERE SYMBOL=@symbol";
+            cmd.ExecuteNonQuery();
             conn.Close();
-        }//end deleteRow
+        }//end deleteStock
 
-        /// <summary>
-        /// Selects the specified columns from the specified table.  Uses the key from the dictionary
-        /// to determine which items the user still has active in the program.
-        /// </summary>
-        /// <param name="cols"></param>
-        /// <param name="table"></param>
-        public DataRow selectFrom(List<string> cols, string symbol)
+        public DataTable selectAllFromOutlook()
         {
-            DataSet temp = new DataSet();
-            conn = new SqlConnection(getConnectionString());
-            comm = "SELECT ";
-            for(int i = 0; i < cols.Count; i++)
-            {
-                comm += cols[i];
-                if(i < cols.Count - 1)
-                {
-                    comm += ", ";
-                }
-            }//end for
-            comm += " FROM STOCKS WHERE SYMBOL=@symbol";
-
-            conn.Open();
-            cmd = new SqlCommand(comm, conn);
-            cmd.Parameters.AddWithValue("@symbol", symbol);
-            da = new SqlDataAdapter(cmd);
-            da.Fill(temp);
-            conn.Close();
-
-            return (temp.Tables.Count > 0 ? temp.Tables[0].Rows[0] : null);
-        }//end selectFrom
-
-        public List<Note> selectNotes(string symbol)
-        {
-            List<Note> res = new List<Note>();
             dt = new DataTable();
+
             conn = new SqlConnection(getConnectionString());
-            comm = "SELECT * FROM NOTES WHERE SYMBOL=@symbol";
+            comm = "SELECT * FROM OUTLOOK ORDER BY ID DESC";
             conn.Open();
             cmd = new SqlCommand(comm, conn);
-            cmd.Parameters.AddWithValue("@symbol", symbol);
             da = new SqlDataAdapter(cmd);
             da.Fill(dt);
             conn.Close();
 
-            foreach(DataRow dr in dt.Rows)
-            {
-                string[] note = dr.Field<string>("NOTE").Split(':');
-                string[] date = dr.Field<string>("DATE").Split('-');
-                string[] time = dr.Field<string>("TIME").Split(':');
-                res.Add(new Note(note, new DateTime(int.Parse(date[0]), int.Parse(date[1]), int.Parse(date[2])), new DateTime(1,1,1, int.Parse(time[0]), int.Parse(time[1]),0)));
-            }//end foreach
-
-            return res;
-        }//end selectNotes
-
-        public void updateNotes()
+            return dt;
+        }//end selectAllFromOutlook
+        public void insertIntoOutlook(string date, string outlook)
         {
+            conn = new SqlConnection(getConnectionString());
+            comm = "INSERT INTO OUTLOOK (ESTIMATED_DATE, ESTIMATED_OUTLOOK) VALUES (@date, @outlook)";
+            conn.Open();
+            cmd = new SqlCommand(comm, conn);
+            cmd.Parameters.AddWithValue("@date", date);
+            cmd.Parameters.AddWithValue("@outlook", outlook);
+            cmd.ExecuteNonQuery();
+            conn.Close();
+        }//end insertIntoOutlook
 
-        }//end updateNotes
+        public void updateOutlook(string date, string outlook)
+        {
+            dt = new DataTable();
+            conn = new SqlConnection(getConnectionString());
+            comm = "SELECT ID FROM OUTLOOK WHERE ESTIMATED_DATE=@date AND ACTUAL_DATE IS NULL AND PERFORMANCE IS NULL";
+            conn.Open(); cmd = new SqlCommand(comm, conn);
+            cmd.Parameters.AddWithValue("@date", date);
+            var id = cmd.ExecuteScalar();
+            if(id != null)
+            {
+                comm = "UPDATE OUTLOOK SET ESTIMATED_OUTLOOK=@outlook WHERE ID=@id";
+                cmd = new SqlCommand(comm, conn);
+                cmd.Parameters.AddWithValue("@outlook", outlook);
+                cmd.Parameters.AddWithValue("@id", id);
+                cmd.ExecuteNonQuery();
+            }
+            conn.Close();
+        }//end updateOutlook
+        public void updateOutlookActualPerformance(string estDate, string date, string outlook)
+        {
+            conn = new SqlConnection(getConnectionString());
+            comm = "UPDATE OUTLOOK SET ACTUAL_DATE=@date, PERFORMANCE=@outlook WHERE ESTIMATED_DATE = @estDate";
+            conn.Open();
+            cmd = new SqlCommand(comm, conn);
+            cmd.Parameters.AddWithValue("@date", date);
+            cmd.Parameters.AddWithValue("@estDate", estDate);
+            cmd.Parameters.AddWithValue("@outlook", outlook);
+            cmd.ExecuteNonQuery();
+            conn.Close();
+        }//end updateOutlookActualPerformance
     }//end DatabaseAccess
-}
+}//end TopDownAnalysis

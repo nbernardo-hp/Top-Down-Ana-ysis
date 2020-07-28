@@ -2,966 +2,935 @@
 using System.Collections.Generic;
 using System.Data;
 using System.IO;
+using System.Linq;
 using System.Windows.Forms;
 
-namespace StockTopDownAnalysis
+namespace TopDownAnalysis
 {
     public partial class frmTopDownAnalysis : Form
     {
-        int tab = 0; //0 denotes Markets tab, 1 denotes Sectors tab
-        bool[] colsLoaded = { false, false };//used to indicate if the column configuration has be loaded from a .xml file. Index 0 = Markets, 1 = Sectors
-        bool saved = true; //used to determine if the save before exit dialog should appear
-        double marketsRating = 0;
-        double sectorsRating = 0;
-        Dictionary<string, Market> markets = new Dictionary<string, Market>();
-        Dictionary<string, Sector> sectors = new Dictionary<string, Sector>();
-
-        //Used to determine which columns are used in the Market and Sectors Overall Rating calc
-        List<string> marketsCalc = new List<string>();
-        List<string> sectorsCalc = new List<string>();
-
-        /// <summary>
-        /// Denotes if there is any change that is applied to a specific stock to be used when saving
-        /// </summary>
-        //1 = edited, 2 = new, 3 = deleted
+        Preferences preferences = new Preferences();
+        Dictionary<string, Stock> map = new Dictionary<string, Stock>();
+        double[] overallRating = new double[2];
+        //1 = new, 2 = edited, 3 = deleted
         Dictionary<string, int> changes = new Dictionary<string, int>();
+        List<string> deletedNotes = new List<string>();
+        bool changesSaved = true;
         public frmTopDownAnalysis()
         {
             InitializeComponent();
-        }
+            try
+            {
+                preferences.loadPreferences();
+            } catch (Exception ex)
+            {
+                errorMessage(ex);
+            }
+        }//end default constructor
 
         private void frmTopDownAnalysis_Load(object sender, EventArgs e)
         {
             try
             {
                 DatabaseAccess dbAccess = new DatabaseAccess();
-                DataTable dt = dbAccess.selectAll('M');
-                populateDictionary(dt, 'M');
-                dt = dbAccess.selectAll('S');
-                populateDictionary(dbAccess.selectAll('S'), 'S');
-                configureDataGridView();
-                configureDataGridView(true);
+                try
+                {
+                    if (preferences.getReinstalled())
+                    {
+                        string path = String.Format("C:\\Users\\{0}\\.topdownanalysis\\", Environment.UserName);
+                        loadStockXmlData(Path.Combine(path, "topdownanalysisstocks.xml"));
+                        loadOverallXmlData(path);
+
+                        foreach (var kvp in map)
+                        {
+                            dbAccess.insertIntoStocks(kvp.Value);
+                            dbAccess.insertIntoNotes(kvp.Key, kvp.Value.getNotes());
+                        }
+
+                        saveCalculationPreferences();
+                        saveColumnPreferences();
+                        savePromptPreferences();
+                    } else
+                    {
+                        populateDictionary(dbAccess.selectAllFromStocks());
+                        addNotesToDictionaryEntries(dbAccess.selectAllFromNotes());
+                    }
+                } catch (TimeoutException ex)
+                {
+                    MessageBox.Show(ex.Message + "  Application will restart.", "Error!", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    Application.Restart();
+                } catch(Exception ex)
+                {
+                    if(ex.Message.Length > 0)
+                    {
+                        errorMessage(ex);
+                    } else
+                    {
+                        MessageBox.Show("Unable to access the database.  Please select a .xml file to load the information", "Unable to access", MessageBoxButtons.OK);
+                    }//end if-else
+
+                    loadStockXmlData();
+                }//end nested try-catch
+
+                try
+                {
+                    string prefPath = AppDomain.CurrentDomain.BaseDirectory + @"\preferences\";
+                    if (!Directory.Exists(prefPath))
+                    {
+                        Directory.CreateDirectory(prefPath);
+                    }
+
+                    File.Create(Path.Combine(prefPath, "load.tda"));
+                } catch (Exception ex)
+                {
+                    errorMessage(ex);
+                }
+
+                checkCalcPreferences('M');
+                checkCalcPreferences('S');
+
+                createColumns();
+                populateDataGridView(dgvMarkets, 'M');
+                populateDataGridView(dgvSectors, 'S');
                 dgvMarkets.SelectionMode = DataGridViewSelectionMode.FullRowSelect;
                 dgvSectors.SelectionMode = DataGridViewSelectionMode.FullRowSelect;
-            } catch (Exception ex)
-            {
-                errorMessage(ex);
-            }
-        }//end frmTopDownAnalysis_Load
 
-        /// <summary>
-        /// Configures the DataGridViews.  If no column configuration is provided for the DataGridView
-        /// calls the createColumns(DataGridView dgv, bool isSectors = false) function.  Else calls the
-        /// createColumns(DataGridView dgv, List<string> cols) function
-        /// </summary>
-        private void configureDataGridView(bool isSectors = false)
-        {
-            try
-            {
-                List<string> cols = loadColumnConfiguration(isSectors);
-                if(!isSectors)
+                if (preferences.getPreviousPrompt() != new DateTime(1) && preferences.getNextPrompt().Year > 2019 && preferences.getNextPrompt() <= DateTime.Today)
                 {
-                    if(colsLoaded[0])
-                    {
-                        createColumns(dgvMarkets, cols);
-                        populateDataGridView(cols, dgvMarkets);
-                    } else
-                    {
-                        createColumns(dgvMarkets);
-                        populateMarkets();
-                    }//end nested if-else
-                } else
-                {
-                    if(colsLoaded[1])
-                    {
-                        createColumns(dgvSectors, cols);
-                        populateDataGridView(cols, dgvSectors, true);
-                    } else
-                    {
-                        createColumns(dgvSectors, true);
-                        populateSectors();
-                    }//end nested if-else
-                }//end if-else
+                    frmActualPerformance frm = new frmActualPerformance();
+                    frm.ShowDialog();
+                    dbAccess.updateOutlookActualPerformance(preferences.getPreviousPrompt().ToShortDateString(), preferences.getNextPrompt().ToShortDateString(), frm.getPerformance());
+                    preferences.setPreviousPrompt(DateTime.Today);
+                }//end if
             } catch (Exception ex)
             {
                 errorMessage(ex);
             }//end try-catch
-        }//end configureDataGridView
+        }//end frmTopDownAnalysis_Load
 
-        private void frmTopDownAnalysis_FormClosing(object sender, FormClosingEventArgs e)
-        {
-            /*Determines if the save before exit dialog should be displayed and displays it if so.
-             *If the result comes back as OK save to the database and backup.  If Abort don't save and
-             *exit the application.  If Cancel cancel exiting the application*/
-            if (!saved)
-            {
-                frmSaveBeforeExit saveBeforeExit = new frmSaveBeforeExit();
-                DialogResult res = saveBeforeExit.ShowDialog();
-                
-                if(res == DialogResult.OK)
-                {
-                    tsmSave.PerformClick();
-                } else if(res == DialogResult.Cancel)
-                {
-                    e.Cancel = true;
-                }
-            }
-        }//end frmTopDownAnalysis_FormClosing
-
-        private void tabControl1_SelectedIndexChanged(object sender, EventArgs e)
+        private void loadOverallXmlData(string path)
         {
             try
             {
-                tab = tabControl1.SelectedIndex;
-                displayOverallRating();
-                enableButtons();
+                XmlData xmlData = new XmlData();
+                DataTable dt = xmlData.loadOverallRating(path);
+                if(preferences.getReinstalled())
+                {
+                    DatabaseAccess dbAccess = new DatabaseAccess();
+                    foreach(DataRow dr in dt.Rows)
+                    {
+                        dbAccess.insertIntoOutlook(dr["ESTIMATED_DATE"].ToString().Trim(), dr["ESTIMATED_OUTLOOK"].ToString().Trim());
+                        if (dr["ACTUAL_DATE"].ToString().Trim() != "")
+                        {
+                            dbAccess.updateOutlookActualPerformance(dr["ESTIMATED_DATE"].ToString().Trim(), dr["ACTUAL_DATE"].ToString().Trim(), dr["PERFORMANCE"].ToString().Trim());
+                        }//end if
+                    }//end foreach
+                }//end if
             } catch (Exception ex)
             {
                 errorMessage(ex);
             }
-        }//end tabControl1_SelectedIndexChanged
+        }//end loadOverallXmlData
 
-        /// <summary>
-        /// Calls enableButtons to enable the Edit, Notes, and Delete buttons
-        /// </summary>
-        /// <param name="sender"></param>
-        /// <param name="e"></param>
-        private void dgvSectors_CellClick(object sender, DataGridViewCellEventArgs e)
+        private void checkCalcPreferences(char type)
         {
-            enableButtons();
-        }//end dgvSectors_CellClick
+            var calcMap = preferences.getCalculationPreferences(type);
+            if(calcMap.Count < 1 || calcMap == null)
+            {
+                foreach(var kvp in map)
+                {
+                    preferences.addStockToPreferences(type, kvp.Value);
+                }//end foreach
+                preferences.defaultCalculationToTrue(type);
+            }//end if
+        }//end checkCalcPreferences
 
-        /// <summary>
-        /// Calls enableButtons to enable the Edit, Notes, and Delete buttons
-        /// </summary>
-        /// <param name="sender"></param>
-        /// <param name="e"></param>
-        private void dgvMarkets_CellClick(object sender, DataGridViewCellEventArgs e)
-        {
-            enableButtons();
-        }//end dgvMarkets_CellClick
-
-        /// <summary>
-        /// Instantiates and displays a new form for the individual stock to be added
-        /// </summary>
-        /// <param name="sender"></param>
-        /// <param name="e"></param>
-        private void tsbAdd_Click(object sender, EventArgs e)
+        private void tsmMarketCalc_Click(object sender, EventArgs e)
         {
             try
             {
-                frmIndividualStock stock;
-                if (tab == 0)
+                frmCalculationPreferences frmCalc = new frmCalculationPreferences(map, 'M', preferences.getCalculationPreferences('M'));
+                if (getDialogResult(frmCalc) == DialogResult.OK)
                 {
-                    stock = new frmIndividualStock("Market");
-                }
-                else
-                {
-                    stock = new frmIndividualStock("Sector");
-                }
-                getIndividualResult(stock);
+                    setCalculationPreferences(frmCalc.getCalculationPreferences(), 'M');
+                }//end if
             } catch (Exception ex)
             {
                 errorMessage(ex);
             }
-        }//end tsbAdd_Click
+        }//end tsmMarketCalc_Click
 
-        /// <summary>
-        /// Instantiates and displays a new form for the individual stock to be edited.  If the DialogResult from the form is OK
-        /// a new Sector or Market object will be returned and added to the appropriate dictionary.  The DataGridView will also repopulate
-        /// </summary>
-        /// <param name="sender"></param>
-        /// <param name="e"></param>
-        private void tsbEdit_Click(object sender, EventArgs e)
+        private void tsmMarketCols_Click(object sender, EventArgs e)
         {
-            
             try
             {
-                frmIndividualStock stock;
-
-                if (tab == 0)
+                frmColumnPreferences frm = new frmColumnPreferences();
+                frm.setFormInformation("Market", preferences.getColumnDictionary('M'));
+                if(getDialogResult(frm) == DialogResult.OK)
                 {
-                    string s = dgvMarkets.SelectedRows[0].Cells["SYMBOL"].Value.ToString().TrimEnd();
-                    stock = new frmIndividualStock("Market", markets[s].getName(), s, markets[s].getSMA200(), markets[s].getSMA50(), markets[s].getSMA20(), markets[s].getChartPattern(), markets[s].getUnexpectedItems());
-                }
-                else
-                {
-                    string s = dgvSectors.SelectedRows[0].Cells["SYMBOL"].Value.ToString().TrimEnd();
-                    stock = new frmIndividualStock("Sector", sectors[s].getName(), s, sectors[s].getSMA200(), sectors[s].getSMA50(), sectors[s].getSMA20(), sectors[s].getChartPattern(), sectors[s].getUnexpectedItems(), sectors[s].getFinvizRank());
-                }
-
-                getIndividualResult(stock);
+                    setColumnPreferences(dgvMarkets, frm.getColumns(), 'M');
+                }//end if
             } catch (Exception ex)
             {
                 errorMessage(ex);
-            }
-        }//end tsbEdit_Click
-
-        private void tsbNotes_Click(object sender, EventArgs e)
+            }//end try-catch
+        }//end tsmMarketCols_Click
+        private void tsmSectorCalc_Click(object sender, EventArgs e)
         {
-            string symbol = "";
-            if(tab == 0)
+            try
             {
-                symbol = dgvMarkets.SelectedRows[0].Cells["SYMBOL"].Value.ToString();
-                frmNotes frm = new frmNotes(markets[symbol].getNotes(), markets[symbol].getName());
-            } else
+                frmCalculationPreferences frmCalc = new frmCalculationPreferences(map, 'S', preferences.getCalculationPreferences('S'));
+                if (getDialogResult(frmCalc) == DialogResult.OK)
+                {
+                    setCalculationPreferences(frmCalc.getCalculationPreferences(), 'S');
+                }//end if
+            } catch (Exception ex)
             {
-                symbol = dgvSectors.SelectedRows[0].Cells["SYMBOL"].Value.ToString();
-                frmNotes frm = new frmNotes(sectors[symbol].getNotes(), sectors[symbol].getName());
+                errorMessage(ex);
+            }//end try-catch
+        }//end tsmSectorCalc_Click
+
+        private void tsmSectorCols_Click(object sender, EventArgs e)
+        {
+            try
+            {
+                frmColumnPreferences frm = new frmColumnPreferences();
+                frm.setFormInformation("Sector", preferences.getColumnDictionary('S'));
+                if (getDialogResult(frm) == DialogResult.OK)
+                {
+                    setColumnPreferences(dgvSectors, frm.getColumns(), 'S');
+                }//end if
             }
-        }//end tsbNotes_Click
+            catch (Exception ex)
+            {
+                errorMessage(ex);
+            }//end try-catch
+        }//end tsmSectorCols_Click
+
+        private void setCalculationPreferences(Dictionary<string, bool> calcMap, char type)
+        {
+            updateCalculationPreferences(calcMap, type);
+            saveCalculationPreferences();
+            calculateOverallRating(type);
+        }//end setCalculationPreferences
+        private void setColumnPreferences(DataGridView dgv, Dictionary<string, bool> cols, char type)
+        {
+            preferences.setPreference("COL", type, cols);
+            createColumnsConfigured(dgv, preferences.getColumnPreferences(type));
+            populateDataGridView(dgv, type);
+            saveColumnPreferences();
+        }//end setColumnPreferences
+        private DialogResult getDialogResult(Form frm)
+        {
+            return frm.ShowDialog();
+        }//end getDialogResult
 
         /// <summary>
-        /// Deletes the selected row from the specific Dictionary and repopulates the current DataGridView
+        /// Updates the calculation preferences in the map Dictionary and the Preferences class preferenceMap attribute
         /// </summary>
-        /// <param name="sender"></param>
-        /// <param name="e"></param>
-        private void tsbDelete_Click(object sender, EventArgs e)
+        /// <param name="prefMap"></param>
+        private void updateCalculationPreferences(Dictionary<string, bool> calcMap, char type)
+        {
+            try
+            {
+                preferences.setPreference("CALC", type, calcMap);
+                foreach(var kvp in calcMap)
+                {
+                    map[kvp.Key].setUsedInCalculation(kvp.Value);
+                }//end foreach
+            } catch (Exception ex)
+            {
+                errorMessage(ex);
+            }//end try-catch
+        }//end updateCalculationPreferences
+
+        private void saveCalculationPreferences()
+        {
+            XmlData xml = new XmlData();
+            xml.saveCalculationPreferences(preferences.getCalculationDictionary());
+            xml.saveCalculationPreferences(preferences.getCalculationDictionary(), String.Format("C:\\Users\\{0}\\.topdownanalysis", Environment.UserName));
+        }//end saveCalculationPreferences
+
+        private void saveColumnPreferences()
+        {
+            XmlData xml = new XmlData();
+            xml.saveColumnPreferences(preferences.getColumnDictionary());
+            xml.saveColumnPreferences(preferences.getColumnDictionary(), String.Format("C:\\Users\\{0}\\.topdownanalysis", Environment.UserName));
+        }//end saveColumnPreferences
+        private void savePromptPreferences()
+        {
+            preferences.savePromptDates();
+            preferences.savePromptDates(String.Format("C:\\Users\\{0}\\.topdownanalysis", Environment.UserName));
+        }//end savePromptPreferences
+
+        private List<string> getColumnList(DataGridView dgv)
+        {
+            List<string> res = new List<string>();
+            foreach(DataGridViewColumn dgc in dgv.Columns)
+            {
+                res.Add(dgc.Name);
+            }
+            return res;
+        }//end getColumnList
+
+        /// <summary>
+        /// Populates the Dictionary that contains all the Stock objects.  Uses the symbol attribute
+        /// as the key.
+        /// </summary>
+        /// <param name="dt"></param>
+        private void populateDictionary(DataTable dt)
         {
             try
             {
                 string symbol = "";
+                double rating = 0;
+                int rank = 0;
+                string type = "";
 
-                if(tab == 0)
+                foreach(DataRow dr in dt.Rows)
                 {
-                    symbol = dgvMarkets.SelectedRows[0].Cells["SYMBOL"].Value.ToString().TrimEnd();
-                    markets.Remove(symbol);
-                    populateMarkets();
-                    enableButtons();
-                } else
-                {
-                    symbol = dgvSectors.SelectedRows[0].Cells["SYMBOL"].Value.ToString().TrimEnd();
-                    sectors.Remove(symbol);
-                    populateSectors();
-                    enableButtons();
-                }
-            } catch (Exception ex)
-            {
-                errorMessage(ex);
-            }
-        }//end tsbDelete_Click
-
-        /// <summary>
-        /// Saves the changes made to the database.  Iterates through the changes dictionary to
-        /// determine if the item should be inserted as a new row, updated, or deleted.
-        /// </summary>
-        /// <param name="sender"></param>
-        /// <param name="e"></param>
-        //1=update, 2=insert, 3=delete
-        private void tsmSave_Click(object sender, EventArgs e)
-        {
-            try
-            {
-                DatabaseAccess dbAccess = new DatabaseAccess();
-
-                foreach (var kvp in changes)
-                {
-                    string key = kvp.Key;
-                    int val = kvp.Value;
-
-                    if (val == 1)
+                    symbol = dr.Field<string>("SYMBOL").Trim();
+                    if (!map.ContainsKey(symbol))
                     {
-                        if (markets.ContainsKey(key))
+                        if(dr["FINVIZ_RANK"].GetType() == typeof(string))
                         {
-                            dbAccess.updateRow(markets[key]);
+                            rank = int.Parse(dr.Field<string>("FINVIZ_RANK"));
+                        } else
+                        {
+                            rank = dr.Field<int>("FINVIZ_RANK");
+                        }//end if-else
+
+                        if(dr["INDIVIDUAL_RATING"].GetType() == typeof(string))
+                        {
+                            double.TryParse(dr.Field<string>("INDIVIDUAL_RATING"), out rating);
+                        } else
+                        {
+                            double.TryParse(dr.Field<decimal>("INDIVIDUAL_RATING").ToString().Trim(), out rating);
                         }
-                        else
-                        {
-                            dbAccess.updateRow(sectors[key], sectors[key].getFinvizRank());
-                        }//end nested if-else
-                    }
-                    else if (val == 2)
-                    {
-                        if (markets.ContainsKey(key))
-                        {
-                            dbAccess.insertInto(markets[key]);
-                        }
-                        else
-                        {
-                            dbAccess.insertInto(sectors[key], sectors[key].getFinvizRank());
-                        }//end nested if-else
-                    }
-                    else
-                    {
-                        dbAccess.deleteRow(key);
-                    }//end if-elseif-else
-
-                    saved = true;
+                        
+                        type = dr.Field<string>("TYPE");
+                        map.Add(symbol, new Stock(dr.Field<string>("NAME").TrimEnd(), symbol, dr.Field<string>("SMA200").TrimEnd(), dr.Field<string>("SMA50").TrimEnd(), dr.Field<string>("SMA20").TrimEnd(), dr.Field<string>("CHART_PATTERN").TrimEnd(), dr.Field<string>("UNEXPECTED_ITEMS").TrimEnd(), rank, rating, type[0]));
+                    }//end if
                 }//end foreach
-            } catch (Exception ex)
-            {
-                errorMessage(ex);
-            } finally
-            {
-                XmlData xmlData = new XmlData();
-                xmlData.createBackupXml(markets, sectors);
-            }
-        }//end tsmSave_Click
-
-        private void exitToolStripMenuItem_Click(object sender, EventArgs e)
-        {
-            try
-            {
-                this.Close();
+                
             } catch (Exception ex)
             {
                 errorMessage(ex);
             }
-        }//end tsmExit_Click
-
-        /// <summary>
-        /// Sends a list of all the items in dgvMarket
-        /// </summary>
-        /// <param name="sender"></param>
-        /// <param name="e"></param>
-        private void tsmMarketOverallCalc_Click(object sender, EventArgs e)
-        {
-            try
-            {
-                string[,] stocks = new string[markets.Count, 2];
-                bool[] isChecked = new bool[markets.Count];
-
-                int i = 0;
-                foreach (var kvp in markets)
-                {
-                    stocks[i, 0] = kvp.Value.getName();
-                    stocks[i, 1] = kvp.Value.getSymbol();
-                    isChecked[i] = kvp.Value.getUsedInCalculation();
-                    i++;
-                }
-
-                displayOverallCalcForm(stocks, isChecked);
-            } catch (Exception ex)
-            {
-                errorMessage(ex);
-            }
-        }//end tsmMarketOverallCalc_Click
-
-        /// <summary>
-        /// Instantiates and displays a form to configure the columns displayed on the provided
-        /// DataGridView.If the DialogResult is OK clear the DGV, Create the new Columns and
-        /// add the appropriate information to the DGV by calling the populateDataGridView function
-        /// </summary>
-        /// <param name="cols"></param>
-        /// <param name="table"></param>
-        /// <param name="dgv"></param>
-        private void showConfigureForm(List<string> cols, string table, DataGridView dgv)
-        {
-            List<string> attributes = new List<string>() { "NAME", "SYMBOL", "SMA200", "SMA50", "SMA20", "CHART_PATTERN", "UNEXPECTED_ITEMS", "FINVIZ_RANK", "INDIVIDUAL_RATING" };
-            if(table == "Market") { attributes.Remove("FINVIZ_RANK"); }
-            frmColumns displayCols = new frmColumns(table, attributes, cols);
-            DialogResult res = displayCols.ShowDialog();
-
-            if (res == DialogResult.OK)
-            {
-                cols = displayCols.getColumns();
-                createColumns(dgv, cols);
-                /*dgv.Rows.Clear();
-                dgv.Columns.Clear();
-                foreach (string c in cols)
-                {
-                    dgv.Columns.Add(c, c);
-                }//end foreach*/
-                populateDataGridView(cols, dgv, (table == "Market" ? false : true));
-                saveColumnConfiguration(cols, (table == "Market" ? 0 : 1));
-            }//end if
-        }//end displayConfigureForm
-
-        /// <summary>
-        /// Calls the getColumns function to get the columns of the DataGridView.  Then calls the
-        /// showCofigureForm function to get the new configuration.  Saves the preferences by
-        /// calling the saveColumnConfiguration function.
-        /// </summary>
-        /// <param name="sender"></param>
-        /// <param name="e"></param>
-        private void tsmMarketDisplayedCols_Click(object sender, EventArgs e)
-        {
-            List<string> cols = getColumns(dgvMarkets);
-            showConfigureForm(cols, "Market", dgvMarkets);
-        }//end tsmMarketDisplayCols_Click
-
-        private void tsmSectorOverallCalc_Click(object sender, EventArgs e)
-        {
-            string[,] stocks = new string[sectors.Count, 2];
-            bool[] isChecked = new bool[sectors.Count];
-
-            int i = 0;
-            foreach (var kvp in sectors)
-            {
-                stocks[i, 0] = kvp.Value.getName();
-                stocks[i, 1] = kvp.Value.getSymbol();
-                isChecked[i] = kvp.Value.getUsedInCalculation();
-                i++;
-            }//end foreach
-            displayOverallCalcForm(stocks, isChecked, true);
-        }//end tsmSectorOverallCalc_Click
-
-        /// <summary>
-        /// Calls the getColumns function to get the columns of the DataGridView.  Then calls the
-        /// showCofigureForm function to get the new configuration.  Saves the preferences by
-        /// calling the saveColumnConfiguration function.
-        /// </summary>
-        /// <param name="sender"></param>
-        /// <param name="e"></param>
-        private void tsmSectorsDisplayedCols_Click(object sender, EventArgs e)
-        {
-            List<string> cols = getColumns(dgvSectors);
-            showConfigureForm(cols, "Sector", dgvSectors);
-        }//end tsmSectorsDisplayCols_Click
-
-        /// <summary>
-        /// Populates a temporary dictionary with initial values for the markets and sectors dictionary's.
-        /// If the type in the datatable is 'S' add the entry to the sectors dictionary otherwise adds it to the markets dictionary
-        /// </summary>
-        /// <param name="dt"></param>
-        /// <param name="type"></param>
-        private void populateDictionary(DataTable dt, char type)
-        {
-            try
-            {
-
-                foreach (DataRow dr in dt.Rows)
-                {
-                    double individualRating;
-                    double.TryParse(dr.Field<decimal>("INDIVIDUAL_RATING").ToString(), out individualRating);
-
-                    string symbol = dr.Field<string>("SYMBOL").TrimEnd();
-
-                    if (type == 'M')
-                    {
-                        if (!markets.ContainsKey(symbol))
-                        {
-                            markets.Add(symbol, new Market(dr.Field<string>("NAME").TrimEnd(), dr.Field<string>("SYMBOL").TrimEnd(),
-                                dr.Field<string>("SMA200").TrimEnd(), dr.Field<string>("SMA50").TrimEnd(), dr.Field<string>("SMA20").TrimEnd(),
-                                dr.Field<string>("CHART_PATTERN").TrimEnd(), dr.Field<string>("UNEXPECTED_ITEMS").TrimEnd(), 0.0));
-                        }
-                        markets[symbol].calculateIndividualRating();
-                    }
-                    else
-                    {
-                        if (!sectors.ContainsKey(symbol))
-                        {
-                            int finvizRank = dr.Field<int>("FINVIZ_RANK");
-                            sectors.Add(symbol, new Sector(dr.Field<string>("NAME").TrimEnd(), dr.Field<string>("SYMBOL").TrimEnd(),
-                                dr.Field<string>("SMA200").TrimEnd(), dr.Field<string>("SMA50").TrimEnd(), dr.Field<string>("SMA20").TrimEnd(),
-                                dr.Field<string>("CHART_PATTERN").TrimEnd(), dr.Field<string>("UNEXPECTED_ITEMS").TrimEnd(), finvizRank, 0.0));
-                        }
-                        sectors[symbol].calculateIndividualRating();
-                    }//end if-else
-                }//end foreach
-            }
-            catch (Exception ex)
-            {
-                errorMessage(ex);
-            }
-
         }//end populateDictionary
 
+
+        private void addNotesToDictionaryEntries(DataTable dt)
+        {
+            string symbol = "";
+            foreach(DataRow dr in dt.Rows)
+            {
+                symbol = dr.Field<string>("SYMBOL").Trim();
+                if(map.ContainsKey(symbol))
+                {
+                    string[] n = dr.Field<string>("NOTE").Split('#');
+                    map[symbol].addNote(new Note(dr.Field<int>("ID"), n, dr.Field<string>("DATE"), dr.Field<string>("TIME")));
+                }//end if
+            }//end foreach
+        }//end addNotesToDictionaryEntries
+
         /// <summary>
-        /// Adds the returned item from the individual form to the Markets dictionary if it doesn't contain the key.
-        /// Otherwise it will update the correct entry
+        /// Calls a function depending on whether a column list has been provided or not for the creation
+        /// of the columns for each DataGridView.
         /// </summary>
-        /// <param name="market"></param>
-        private void addToMarkets(Market market)
+        private void createColumns()
+        {
+            if(preferences.getPreferenceLoaded("COL", 'M'))
+            {
+                createColumnsConfigured(dgvMarkets, preferences.getColumnPreferences('M'));
+            } else
+            {
+                createColumnsDefault(dgvMarkets);
+            }//end if-else
+
+            if (preferences.getPreferenceLoaded("COL", 'S'))
+            {
+                createColumnsConfigured(dgvSectors, preferences.getColumnPreferences('S'));
+            } else
+            {
+                createColumnsDefault(dgvSectors);
+            }//end if-else
+        }//end createColumns
+
+        /// <summary>
+        /// Creates the default columns for the specified DataGridView.  Called if the columns for either
+        /// are not configured
+        /// </summary>
+        /// <param name="dgv"></param>
+        private void createColumnsDefault(DataGridView dgv)
+        {
+            dgv.Columns.Clear();
+            dgv.Columns.Add("Name", "Name");
+            dgv.Columns.Add("Symbol", "Symbol");
+            dgv.Columns.Add("20 & 50 SMAs", "20 & 50 SMAs");
+            dgv.Columns.Add("50 SMA", "50 SMA");
+            dgv.Columns.Add("20 SMA", "20 SMA");
+            dgv.Columns.Add("Chart Pattern", "Chart Pattern");
+            dgv.Columns.Add("Market News", "Market News");
+            if(dgv.Name == "dgvSectors")
+            {
+                dgv.Columns.Add("Finviz Rank", "Finviz Rank");
+            }//end if
+            dgv.Columns.Add("Rating", "Rating");
+
+            createColumnToolTips(dgv);
+        }//end createDefaultCoulmns
+
+        /// <summary>
+        /// Creates the columns when the user has configured the information to be displayed
+        /// </summary>
+        /// <param name="dgv"></param>
+        private void createColumnsConfigured(DataGridView dgv, List<string> cols)
+        {
+            dgv.Columns.Clear();
+            foreach (string c in cols)
+            {
+                dgv.Columns.Add(c, c);
+            }//end foreach
+            createColumnToolTips(dgv);
+        }//end createConfiguredColumns
+
+        /// <summary>
+        /// Creates the ToolTips for specific columns
+        /// </summary>
+        /// <param name="dgv"></param>
+        private void createColumnToolTips(DataGridView dgv)
+        {
+            if (dgv.Columns.Contains("50 SMA") && dgv.Columns["50 SMA"].ToolTipText == "")
+            {
+                dgv.Columns["50 SMA"].ToolTipText = "Is Stock Price:\n- Below 50 SMA\n- At the 50 SMA\n- Above 50 SMA (strong stock)";
+            }
+            if (dgv.Columns.Contains("Chart Pattern") && dgv.Columns["Chart Pattern"].ToolTipText == "")
+            {
+                dgv.Columns["Chart Pattern"].ToolTipText = "Look at the Weekly chart to determine what to place here.";
+
+            }
+            if (dgv.Columns.Contains("Market News") && dgv.Columns["Market News"].ToolTipText == "")
+            {
+                dgv.Columns["Market News"].ToolTipText = "If no news, enter \"No News\", not \"Average\".";
+            }
+        }//end createColumnToolTips
+
+        /// <summary>
+        /// Populates the provided DataGridView depending on which columns are present in it.
+        /// Iterates through the map Dictionary to determine if the specific entry belongs in
+        /// the DataGridView.  Populates the DataGridView with the Stock objects information if so
+        /// </summary>
+        /// <param name="dgv"></param>
+        /// <param name="type"></param>
+        private void populateDataGridView(DataGridView dgv, char type)
+        {
+            dgv.Rows.Clear();
+            int ri = 0;
+
+            var values = from m in map
+                         where m.Value.getType() == type
+                         select m.Value;
+
+            foreach(var v in values)
+            {
+                
+                if(dgv.Rows.Count < values.Count())
+                {
+                    dgv.Rows.Add();
+                }
+
+                populateDataGridViewRow(dgv, ri, v);
+
+                ri++;
+            }
+            /*foreach(var kvp in map)
+            {
+                if(kvp.Value.getType() == type)
+                {
+                    
+                }//end if
+            }//end foreach*/
+
+            calculateOverallRating(type);
+        }//end populateDataGridView
+
+        /// <summary>
+        /// Opens a FileOpenDialog to have the user select a .xml file to load.
+        /// </summary>
+        private void loadStockXmlData(string path = null)
+        {
+            XmlData xml = new XmlData();
+            if(path == null)
+            {
+                if(Directory.Exists(AppDomain.CurrentDomain.BaseDirectory + @"backup\"))
+                {
+                    OpenFileDialog open = new OpenFileDialog();
+                    open.InitialDirectory = AppDomain.CurrentDomain.BaseDirectory + @"backup\";
+                    open.DefaultExt = "Xml|.xml";
+                    DialogResult res = open.ShowDialog();
+                    if (res == DialogResult.OK)
+                    {
+                        frmBackupView view = new frmBackupView(xml.loadXml(open.FileName, "STOCK"), open.FileName);
+                        view.ShowDialog();
+                        //populateDictionaryFromXml(xml, open.FileName);
+                    }//end if
+                } else
+                {
+                    MessageBox.Show("No backup directory exists.", "Invalid Operation", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                }//end nested if-else
+            } else
+            {
+                populateDictionaryFromXml(xml, path);
+            }
+        }//end loadXmlData
+
+        private void populateDictionaryFromXml(XmlData xml, string path)
+        {
+            if (map.Count() > 0)
+            {
+                map.Clear();
+            }
+            DataTable dt = new DataTable();
+            dt = xml.loadXml(path, "STOCK");
+            populateDictionary(dt);
+            dt = xml.loadXml(path, "NOTE");
+            addNotesToDictionaryEntries(dt);
+            if (dgvMarkets.Columns.Count == 0 && dgvSectors.Columns.Count == 0)
+            {
+                createColumns();
+            }
+            populateDataGridView(dgvMarkets, 'M');
+            populateDataGridView(dgvSectors, 'S');
+        }
+        //end populateDictionaryFromXML
+        /// <summary>
+        /// Function to call to display the Exception error message
+        /// </summary>
+        /// <param name="ex"></param>
+        public static void errorMessage(Exception ex)
+        {
+            MessageBox.Show("Error! " + ex.Message, "Error!", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }//end errorMessage()
+
+        private void tsbAdd_Click(object sender, EventArgs e)
         {
             try
             {
-                string symbol = market.getSymbol();
-                market.calculateIndividualRating();
-
-                changeStatus(symbol);
-                if (!markets.ContainsKey(symbol))
+                frmStock frm = new frmStock();
+                if (getDialogResult(frm) == DialogResult.OK)
                 {
-                    markets.Add(symbol, market);
-                } else
-                {
-                    markets[symbol] = market;
-                }
-
-                populateMarkets();
+                    string symbol = frm.getStock().getSymbol();
+                    if (!map.ContainsKey(symbol))
+                    {
+                        map.Add(symbol, frm.getStock());
+                        adjustChangesDictionary(symbol, 1);
+                        char type = map[symbol].getType();
+                        preferences.addStockToPreferences(map[symbol].getType(), map[symbol]);
+                        saveCalculationPreferences();
+                        populateDataGridView((type == 'M' ? dgvMarkets : dgvSectors), type);
+                        changesSaved = false;
+                    }
+                    else
+                    {
+                        MessageBox.Show("A stock with that symbol is already in the database.");
+                    }//end nested if-else
+                    
+                }//end if
             } catch (Exception ex)
             {
                 errorMessage(ex);
-            }
-        }//end addToMarkets
+            }//end try-catch
+        }//end tsbAdd_Click
 
-        /// <summary>
-        /// Adds the returned item from the individual form to the Sectors dictionary if it
-        /// doesn't contain the key.  Otherwise it will update the correct entry
-        /// </summary>
-        private void addToSectors(Sector sector)
-        {
-            try
-            {
-                string symbol = sector.getSymbol();
-                sector.calculateIndividualRating();
-
-                changeStatus(symbol);
-                if (!sectors.ContainsKey(symbol))
-                {
-                    sectors.Add(symbol, sector);
-                }
-                else
-                {
-                    sectors[symbol] = sector;
-                }
-                populateSectors();
-            }
-            catch (Exception ex)
-            {
-                errorMessage(ex);
-            }
-        }//end addToMarkets
-
-        /// <summary>
-        /// Checks the Changes dictionary to determine if any changes have occurred with the
-        /// object. Adds an entry with the symbol if not.  Checks to see if Markets or Sectors
-        /// contains the key, returns 1 if they do or 2 if they dont.  If Changes contains the
-        /// key, check to determine if the item was added or updated.  If the value at that index
-        /// is no 2, keep the value the same ot
-        /// </summary>
-        //1 = edited and 2 = new
-        private void changeStatus(string symbol)
+        private void adjustChangesDictionary(string symbol, int i)
         {
             if (!changes.ContainsKey(symbol))
             {
-                int val = (markets.ContainsKey(symbol) || sectors.ContainsKey(symbol) ? 1 : 2);
-                changes.Add(symbol, val);
+                changes.Add(symbol, i);
             }
             else
             {
                 int val = 0;
                 changes.TryGetValue(symbol, out val);
 
-                changes[symbol] = (val != 2 ? 1 : 2);
-            }//end if-else
-        }//end changeStatus
-        private void createColumns(DataGridView dgv, List<string> cols)
-        {
-            dgv.Rows.Clear();
-            dgv.Columns.Clear();
-            foreach(string c in cols)
-            {
-                dgv.Columns.Add(c, c);
-            }//end foreach
-        }//end createColumns
-
-        /// <summary>
-        /// Adds the columns to the DataGridViews
-        /// </summary>
-        /// <param name="dgv"></param>
-        /// <param name="isSectors"></param>
-        private void createColumns(DataGridView dgv, bool isSectors = false)
-        {
-            try
-            {
-                dgv.Columns.Add("NAME", "NAME");
-                dgv.Columns.Add("SYMBOL", "SYMBOL");
-                dgv.Columns.Add("SMA200", "SMA200");
-                dgv.Columns.Add("SMA50", "SMA50");
-                dgv.Columns.Add("SMA20", "SMA20");
-                dgv.Columns.Add("CHART_PATTERN", "CHART_PATTERN");
-                dgv.Columns.Add("UNEXPECTED_ITEMS", "UNEXPECTED_ITEMS");
-
-                if (isSectors)
+                if (val != 1)
                 {
-                    dgv.Columns.Add("FINVIZ_RANK", "FINVIZ_RANK");
-                }
-
-                dgv.Columns.Add("INDIVIDUAL_RATING", "INDIVIDUAL_RATING");
-
-                createToolTips(dgv);
-            }
-            catch (Exception ex)
-            {
-                errorMessage(ex);
-            }
-        }//end createColumns
-
-        /// <summary>
-        /// Creates the ToolTips for specific columns
-        /// </summary>
-        /// <param name="dgv"></param>
-        private void createToolTips(DataGridView dgv)
-        {
-            dgv.Columns["SMA50"].ToolTipText = "Is Stock Price:\n- Below 50 SMA\n- At the 50 SMA\n- Above 50 SMA (strong stock)";
-            dgv.Columns["CHART_PATTERN"].ToolTipText = "Look at the Weekly chart to determine what to place here.";
-            dgv.Columns["UNEXPECTED_ITEMS"].ToolTipText = "If no news, enter \"No News\", not \"Average\".";
-        }//end createToolTips
-
-        /// <summary>
-        /// Populates the Markets DataGridView and calls the calculateOverallRating function
-        /// </summary>
-        private void populateMarkets()
-        {
-            try
-            {
-                dgvMarkets.Rows.Clear();
-
-                foreach (var kvp in markets)
-                {
-                    dgvMarkets.Rows.Add(new object[] { kvp.Value.getName(), kvp.Value.getSymbol(),
-                    kvp.Value.getSMA200(), kvp.Value.getSMA50(), kvp.Value.getSMA20(), kvp.Value.getChartPattern(),
-                    kvp.Value.getUnexpectedItems(), String.Format("{0:0.0}", kvp.Value.getIndividualRating()) });
-                }
-                getCalcPreferences("Market");
-                calculateOverallRating(ref marketsRating);
-                displayOverallRating();
-            }
-            catch (Exception ex)
-            {
-                errorMessage(ex);
-            }
-        }//end populateMarkets
-
-        /// <summary>
-        /// Populates the DataGridView with the information for the columns provided.  The dictionary is
-        /// determined using the isSectors variable which is defaulted to false.
-        /// </summary>
-        /// <param name="cols"></param>
-        private void populateDataGridView(List<string> cols, DataGridView dgv, bool isSectors = false)
-        {
-            int ri = 0;
-            int rowCount = (!isSectors ? markets.Count : sectors.Count);
-            dgv.Rows.Add(rowCount);
-            DatabaseAccess dbAccess = new DatabaseAccess();
-            if(!isSectors)
-            {
-                foreach (var kvp in markets)
-                {
-                    var row = dbAccess.selectFrom(cols, kvp.Key);
-                    for (int i = 0; i < dgvMarkets.Columns.Count; i++)
+                    changes[symbol] = i;
+                    if (i == 3)
                     {
-                        dgvMarkets.Rows[ri].Cells[i].Value = row[i];
-                    }
-                    ri++;
-                }//end foreach
-                calculateOverallRating(ref marketsRating);
+                        preferences.deleteStockFromPreferences(map[symbol].getType(), symbol);
+                    }//end nested if
+                }
+                else if (i == 3 && val == 1)
+                {
+                    char type = map[symbol].getType();
+
+                    changes.Remove(symbol);
+                    map.Remove(symbol);
+                    preferences.deleteStockFromPreferences(type, symbol);
+                }//end if-else if
+            }
+        }//end adjustChangesDictionary
+        private void toggleButtons()
+        {
+            if((tabStocks.SelectedTab == tabMarkets && dgvMarkets.SelectedRows.Count > 0) || (tabStocks.SelectedTab == tabSectors && dgvSectors.SelectedRows.Count > 0))
+            {
+                tsbEdit.Enabled = true;
+                tsbDelete.Enabled = true;
+                tsbNotes.Enabled = true;
             } else
             {
-                foreach(var kvp in sectors)
+                tsbEdit.Enabled = false;
+                tsbDelete.Enabled = false;
+                tsbNotes.Enabled = false;
+            }
+        }//end toggleButtons
+
+        private void tabStocks_SelectedIndexChanged(object sender, EventArgs e)
+        {
+            toggleButtons();
+            displayOverallRating((tabStocks.SelectedTab == tabMarkets ? 0 : 1));
+        }//end tabStocks_SelectedIndexChanged
+
+        private void dgvMarkets_SelectionChanged(object sender, EventArgs e)
+        {
+            toggleButtons();
+        }//end dgvMarkets_SelectionChanged
+
+        private void tsbEdit_Click(object sender, EventArgs e)
+        {
+            try
+            {
+                int index = (tabStocks.SelectedTab == tabMarkets ? dgvMarkets.SelectedRows[0].Index : dgvSectors.SelectedRows[0].Index);
+                individualStockFormFunction(getStockSymbol(), 0);
+
+                populateDataGridViewRow((tabStocks.SelectedTab == tabMarkets ? dgvMarkets : dgvSectors), index, map[getStockSymbol()]);
+
+                var sorted = (tabStocks.SelectedTab == tabMarkets ? dgvMarkets.SortedColumn : dgvSectors.SortedColumn);
+                var direction = (tabStocks.SelectedTab == tabMarkets ? dgvMarkets.SortOrder : dgvSectors.SortOrder);
+                if (tabStocks.SelectedTab == tabMarkets)
                 {
-                    var row = dbAccess.selectFrom(cols, kvp.Key);
-                    for(int i = 0; i < dgvSectors.Columns.Count; i++)
+                    dgvMarkets.Rows[index].Selected = true;
+                    if(sorted != null)
                     {
-                        dgvSectors.Rows[ri].Cells[i].Value = row[i];
+                        dgvMarkets.Sort(sorted, (direction == SortOrder.Ascending ? System.ComponentModel.ListSortDirection.Ascending : System.ComponentModel.ListSortDirection.Descending));
                     }
-                    ri++;
-                }//end foreach
-                calculateOverallRating(ref sectorsRating, true);
-            }//end if-else
-        }//end populateDataGridView
-
-        /// <summary>
-        /// Populates the Sectors DataGridView and calls the calculateOverallRating function
-        /// </summary>
-        private void populateSectors()
-        {
-            try
-            {
-                dgvSectors.Rows.Clear();
-
-                foreach (var kvp in sectors)
+                } else
                 {
-                    dgvSectors.Rows.Add(new object[] { kvp.Value.getName(), kvp.Value.getSymbol(),
-                    kvp.Value.getSMA200(), kvp.Value.getSMA50(), kvp.Value.getSMA20(), kvp.Value.getChartPattern(),
-                    kvp.Value.getUnexpectedItems(), kvp.Value.getFinvizRank(), String.Format("{0:0.0}", kvp.Value.getIndividualRating()) });
-                }
-                getCalcPreferences("Sector");
-                calculateOverallRating(ref sectorsRating, true);
-                displayOverallRating();
-            }
-            catch (Exception ex)
-            {
-                errorMessage(ex);
-            }
-        }//end populateSectors
-
-        /// <summary>
-        ///Gets the individual rating of every item contained in the Markets or Sectors
-        ///dictionary if the usedInCalculation attribute is true.  Returns a double array'
-        ///containing the total, at index 0, and the total number of items included, at index 1
-        /// </summary>
-        private double[] getIndividualRatings(bool isSectors = false)
-        {
-            double[] res = new double[2] { 0, 0 };
-
-            try
-            {
-                if (!isSectors)
-                {
-                    foreach (var kvp in markets)
+                    dgvSectors.Rows[index].Selected = true;
+                    if (sorted != null)
                     {
-                        if(kvp.Value.getUsedInCalculation() == true)
-                        {
-                            res[0] += kvp.Value.getIndividualRating();
-                            res[1]++;
-                        }
-                    }//end foreach
-                }
-                else
-                {
-                    foreach (var kvp in sectors)
-                    {
-                        if (kvp.Value.getUsedInCalculation() == true)
-                        {
-                            res[0] += kvp.Value.getIndividualRating();
-                            res[1]++;
-                        }
-                    }//end foreach
+                        dgvSectors.Sort(sorted, (direction == SortOrder.Ascending ? System.ComponentModel.ListSortDirection.Ascending : System.ComponentModel.ListSortDirection.Descending));
+                    }
                 }//end if-else
-            } catch (Exception ex)
-            {
-                errorMessage(ex);
-            }
-
-            return res;
-        }//end getIndividualRatings
-
-        /// <summary>
-        /// Calculates the overall rating of the Markets and Sectors.  Assigns the value to the appropriate variable
-        /// </summary>
-        /// <param name="rating"></param>
-        /// <param name="isSectors"></param>
-        private void calculateOverallRating(ref double rating, bool isSectors = false)
-        {
-            try
-            {
-                rating = 0;
-
-                double[] list = getIndividualRatings(isSectors);
-
-                rating = list[0] / list[1];
-                rating = Math.Round(rating, 1);
-            } catch (Exception ex)
-            {
-                errorMessage(ex);
-            }
-        }//end calculateOverallRating
-
-        /// <summary>
-        /// Displays the overall rating for the selected tab in the ToolStripMenu
-        /// </summary>
-        private void displayOverallRating()
-        {
-            try
-            {
-                if (tab == 0)
-                {
-                    tslTab.Text = "Market Rating: ";
-                    tslRating.Text = String.Format("{0:0.0}", marketsRating);
-                }
-                else
-                {
-                    tslTab.Text = "Sector Rating: ";
-                    tslRating.Text = String.Format("{0:0.0}", sectorsRating);
-                }
             }
             catch (Exception ex)
             {
                 errorMessage(ex);
-            }
-        }//end displayOverallRating
+            }//end try-catch
+        }//end tsbEdit_Click
 
-        /// <summary>
-        /// Enables the Edit, Notes, and Delete buttons depending on if an item is selected on the current tab
-        /// </summary>
-        private void enableButtons()
+        private void tsbNotes_Click(object sender, EventArgs e)
         {
             try
             {
-                if ((tab == 0 && dgvMarkets.SelectedRows.Count > 0) || (tab == 1 && dgvSectors.SelectedRows.Count > 0))
-                {
-                    tsbEdit.Enabled = true;
-                    tsbNotes.Enabled = true;
-                    tsbDelete.Enabled = true;
-                }
-                else
-                {
-                    tsbEdit.Enabled = false;
-                    tsbNotes.Enabled = false;
-                    tsbDelete.Enabled = false;
-                }
-            } catch (Exception ex)
+                individualStockFormFunction(getStockSymbol(), 1);
+            }
+            catch (Exception ex)
             {
                 errorMessage(ex);
-            }
-        }//end enableButtons
+            }//end try-catch
+        }//end tsbNotes_Click
 
-        /// <summary>
-        /// Displays and retreives the result from the individual stock form.  Calls the function to add to the correct dictionary if the DialogResult is OK
-        /// </summary>
-        /// <param name="stock"></param>
-        private void getIndividualResult(frmIndividualStock stock)
+        private string getStockSymbol()
         {
-            try
+            string symbol;
+            if (tabStocks.SelectedTab == tabMarkets)
             {
-                DialogResult res = stock.ShowDialog();
-                if(res == DialogResult.OK)
-                {
-                    if(tab == 0)
-                    {
-                        addToMarkets(stock.getMarket());
-                    } else
-                    {
-                        addToSectors(stock.getSector());
-                    }//end nested if-else
-
-                    saved = false;
-                }//end if
-            } catch (Exception ex)
-            {
-                errorMessage(ex);
-            }
-        }//end getIndividualResult
-
-        /// <summary>
-        /// Gets the columns displayed in the DataGridView to be provided to the column configuration form
-        /// </summary>
-        /// <param name="dgv"></param>
-        /// <returns></returns>
-        private List<string> getColumns(DataGridView dgv) {
-            List<string> res = new List<string>();
-
-            foreach(DataGridViewColumn dc in dgv.Columns)
-            {
-                res.Add(dc.Name);
-            }
-
-            return res;
-        }//end getColumns
-
-        /// <summary>
-        /// Displays the form that contains all the stocks in Markets or Sectors.  If the DialogResult
-        /// from the form is OK, call setUsedInCalcAttribute funtion to set the attribute for in the dictionary
-        /// </summary>
-        /// <param name="stocks"></param>
-        /// <param name="isChecked"></param>
-        private void displayOverallCalcForm(string[,] stocks, bool[] isChecked, bool isSectors = false)
-        {
-            frmOverallCalculation calc = new frmOverallCalculation(stocks, isChecked);
-            DialogResult res = calc.ShowDialog();
-            if (res == DialogResult.OK)
-            {
-                isChecked = calc.getResult().ToArray();
-                setUsedInCalcAttribute(isChecked, isSectors);
-                displayOverallRating();
-            }//end if
-        }//end displayOverallCalcForm
-
-        /// <summary>
-        /// Sets the usedInCalc attribute for each item in the dictionary.  Calls the function
-        /// calculate the overall rating for the table.  Saves the to the preferences folder
-        /// by calling the XmlData.saveCalculationPreferences function
-        /// </summary>
-        /// <param name="isChecked"></param>
-        /// <param name="isSectors"></param>
-        private void setUsedInCalcAttribute(bool[] isChecked, bool isSectors = false)
-        {
-            int i = 0;
-            if (!isSectors)
-            {
-                foreach (var kvp in markets)
-                {
-                    kvp.Value.setUsedInCalculation(isChecked[i]);
-                    i++;
-                }//end foreach
-
-                calculateOverallRating(ref marketsRating);
+                symbol = dgvMarkets.SelectedRows[0].Cells["Symbol"].Value.ToString().Trim();
             }
             else
             {
-                foreach (var kvp in sectors)
-                {
-                    kvp.Value.setUsedInCalculation(isChecked[i]);
-                    i++;
-                }//end foreach
-
-                calculateOverallRating(ref sectorsRating, true);
+                symbol = dgvSectors.SelectedRows[0].Cells["Symbol"].Value.ToString().Trim();
             }//end if-else
+            return symbol;
+        }//end getStockSymbol
 
-            XmlData data = new XmlData();
-            data.saveCalculationPreferences(markets, sectors);
-        }//end setUsedInCalcAttribute
-
-        /// <summary>
-        /// Displays the error thrown by the exception
-        /// </summary>
-        /// <param name="ex"></param>
-        public static void errorMessage(Exception ex)
+        private void individualStockFormFunction(string symbol, int i)
         {
-            MessageBox.Show("Error! " + ex.Message, "ERROR", MessageBoxButtons.OK, MessageBoxIcon.Error);
-        }
+            frmStock frm = new frmStock(map[symbol], i);
+            if (getDialogResult(frm) == DialogResult.OK)
+            {
+                map[symbol] = frm.getStock();
+                var temp = frm.getDeletedNotes();
+                if(temp.Count() > 0)
+                {
+                    foreach(int t in temp)
+                    {
+                        deletedNotes.Add(symbol + "#" + t.ToString());
+                    }//end foreach
+                }//end if
+                //populateDataGridView((tabStocks.SelectedTab == tabMarkets ? dgvMarkets : dgvSectors), (tabStocks.SelectedTab == tabMarkets ? 'M' : 'S'));
+                adjustChangesDictionary(symbol, 2);
+                calculateOverallRating((tabStocks.SelectedTab == tabMarkets ? 'M' : 'S'));
+                changesSaved = false;
+            }//end if
+        }//end individualStockFormFunction
 
-        /// <summary>
-        /// Instantiates a new XmlData class to return the dictionary of each item saved in the preferences
-        /// If the dictionary contains the symbol, sets the value of usedInCalculation to the value in the
-        /// returned dictionary.
-        /// </summary>
-        /// <param name="table"></param>
-        private void getCalcPreferences(string table)
+        private void tsbDelete_Click(object sender, EventArgs e)
         {
             try
             {
-                XmlData xmlData = new XmlData();
-                Dictionary<string, bool> map = xmlData.loadCalcPreferences(table);
-                
-                foreach(var kvp in map)
+                string symbol = getStockSymbol();
+                char type;
+                if(tabStocks.SelectedTab == tabMarkets)
+                {
+                    dgvMarkets.Rows.Remove(dgvMarkets.SelectedRows[0]);
+                    type = 'M';
+                } else
+                {
+                    dgvSectors.Rows.Remove(dgvSectors.SelectedRows[0]);
+                    type = 'S';
+                }//end if-else
+                adjustChangesDictionary(symbol, 3);
+                map.Remove(symbol);
+                calculateOverallRating(type);
+                changesSaved = false;
+            } catch (Exception ex)
+            {
+                errorMessage(ex);
+            }//end try-catch
+        }//end tsbDelete_Click
+
+        private void calculateOverallRating(char type)
+        {
+            var calc = preferences.getCalculationPreferences(type);
+            var query = from m in map
+                        where m.Value.getType() == type && calc.Contains(m.Key)
+                        select m.Value.getIndividualRating();
+
+            int count = 0;
+            int i = (type == 'M' ? 0 : 1);
+            overallRating[i] = 0;
+            foreach(var q in query)
+            {
+                overallRating[i] += q;
+                count++;
+            }//end foreach
+
+            overallRating[i] /= count;
+            displayOverallRating((tabStocks.SelectedTab == tabMarkets ? 0 : 1));
+        }//end calculateOverallRating
+
+        private void displayOverallRating(int i)
+        {
+            tslOverallRating.Text = String.Format("{0:0.0}", overallRating[i]);
+        }//end displayOverallRating
+
+        private void dgvMarkets_CellDoubleClick(object sender, DataGridViewCellEventArgs e)
+        {
+            tsbEdit.PerformClick();
+        }//end dgvMarkets_CellDoubleClick
+
+        private void dgvSectors_CellDoubleClick(object sender, DataGridViewCellEventArgs e)
+        {
+            tsbEdit.PerformClick();
+        }//end dgvSectors_CellDoubleClick
+
+        private void tsmExit_Click(object sender, EventArgs e)
+        {
+            this.Close();
+        }//end tsmExit_Click
+
+        private void tsmSave_Click(object sender, EventArgs e)
+        {
+            try
+            {
+                DatabaseAccess dbAccess = new DatabaseAccess();
+                foreach(var kvp in changes)
                 {
                     string symbol = kvp.Key;
-                    if(markets.ContainsKey(symbol))
+                    if(kvp.Value == 1)
                     {
-                        markets[symbol].setUsedInCalculation(kvp.Value);
-                    } else if(sectors.ContainsKey(symbol))
+                        dbAccess.insertIntoStocks(map[symbol]);
+                        if(map[symbol].getNotes() != null && map[symbol].getNotes().Count() > 0)
+                        {
+                            dbAccess.insertIntoNotes(symbol, map[symbol].getNotes());
+                        }//end nested if
+                    } else if (kvp.Value == 2)
                     {
-                        sectors[symbol].setUsedInCalculation(kvp.Value);
-                    }
+                        dbAccess.updateStocks(symbol, map[symbol]);
+                        if (map[symbol].getNotes() != null && map[symbol].getNotes().Count() > 0)
+                        {
+                            var updateNotes = from m in map[symbol].getNotes()
+                                              where m.getId() > -1
+                                              select m;
+                            var newNotes = from m in map[symbol].getNotes()
+                                           where m.getId() == -1
+                                           select m;
+                            foreach(Note n in updateNotes)
+                            {
+                                dbAccess.updateNotes(n);
+                            }//end foreach
+
+                            if(newNotes.Count() > 0)
+                            {
+                                dbAccess.insertIntoNotes(symbol, newNotes.ToList());
+                            }
+                        }//end nested if
+                    } else
+                    {
+                        dbAccess.deleteStock(symbol);
+                    }//end if-else if-else
+                }//end foreach
+
+                foreach (string d in deletedNotes)
+                {
+                    string[] ds = d.Split('#');
+                    dbAccess.deleteNote(ds[0], int.Parse(ds[1]));
+                }//end foreach
+
+                XmlData xmlData = new XmlData();
+                xmlData.createBackupXml(map);
+                xmlData.createBackupXml(map, String.Format("C:\\Users\\{0}\\.topdownanalysis", Environment.UserName));
+
+                if (preferences.getNextPrompt() == new DateTime(1) || DateTime.Today >= preferences.getNextPrompt())
+                {
+                    int days = (preferences.getPromptDays() >= 1 ? preferences.getPromptDays() : 7);
+                    preferences.setNextPrompt(DateTime.Now.AddDays(days));
+                    dbAccess.insertIntoOutlook(DateTime.Today.ToShortDateString(), preferences.getOutlookRating(overallRating[0]));
+                } else if (DateTime.Today == preferences.getPreviousPrompt())
+                {
+                    //TODO DOESN'T UPDATE IF SAVED MULTIPLE TIMES DURING THE SAME DAY
+                    dbAccess.updateOutlook(DateTime.Today.ToShortDateString(), preferences.getOutlookRating(overallRating[0]));
+                }//end if-else if
+
+                xmlData.backupOverallRating(new DatabaseAccess().selectAllFromOutlook());
+                xmlData.backupOverallRating(new DatabaseAccess().selectAllFromOutlook(), String.Format("C:\\Users\\{0}\\.topdownanalysis", Environment.UserName));
+                
+                changesSaved = true;
+                saveCalculationPreferences();
+                saveColumnPreferences();
+                savePromptPreferences();
+            } catch (Exception ex)
+            {
+                errorMessage(ex);
+            }//end try-catch
+        }//end tsmSave_Click
+
+        private void tsmLoadXml_Click(object sender, EventArgs e)
+        {
+            try
+            {
+                loadStockXmlData();
+            } catch (Exception ex)
+            {
+                errorMessage(ex);
+            }//ent try-catch
+        }//end tsmLoadXml_Click
+
+        private void frmTopDownAnalysis_FormClosing(object sender, FormClosingEventArgs e)
+        {
+            if(changesSaved == false)
+            {
+                frmSaveBeforeExit frm = new frmSaveBeforeExit();
+                var res = getDialogResult(frm);
+                if (res == DialogResult.OK)
+                {
+                    tsmSave.PerformClick();
+                } else if (res == DialogResult.Cancel)
+                {
+                    e.Cancel = true;
+                }//end nested if-else if
+            }//end if
+        }//end frmTopDownAnalysis_FormClosing
+
+        private void tsmSaveExit_Click(object sender, EventArgs e)
+        {
+            tsmSave.PerformClick();
+            this.Close();
+        }//end tsmSaveExit_Click
+
+        private void tsmViewOutlook_Click(object sender, EventArgs e)
+        {
+            try
+            {
+                frmViewOutlook frm = new frmViewOutlook(new DatabaseAccess().selectAllFromOutlook());
+                frm.Show();
+            } catch (Exception ex)
+            {
+                errorMessage(ex);
+            }//end try-catch
+        }//end tsmViewOutlook
+
+        private void populateDataGridViewRow(DataGridView dgv, int ri, Stock stock)
+        {
+            int ci = 0;
+            foreach (DataGridViewColumn dc in dgv.Columns)
+            {
+                if (dc.Name == "Name")
+                {
+                    dgv.Rows[ri].Cells[ci].Value = stock.getName();
+                }
+                else if (dc.Name == "Symbol")
+                {
+                    dgv.Rows[ri].Cells[ci].Value = stock.getSymbol();
+                }
+                else if (dc.Name == "20 & 50 SMAs")
+                {
+                    dgv.Rows[ri].Cells[ci].Value = stock.getSMA200();
+                }
+                else if (dc.Name == "50 SMA")
+                {
+                    dgv.Rows[ri].Cells[ci].Value = stock.getSMA50();
+                }
+                else if (dc.Name == "20 SMA")
+                {
+                    dgv.Rows[ri].Cells[ci].Value = stock.getSMA20();
+                }
+                else if (dc.Name == "Chart Pattern")
+                {
+                    dgv.Rows[ri].Cells[ci].Value = stock.getChartPattern();
+                }
+                else if (dc.Name == "Market News")
+                {
+                    dgv.Rows[ri].Cells[ci].Value = stock.getUnexpectedItems();
+                }
+                else if (dc.Name == "Rating")
+                {
+                    dgv.Rows[ri].Cells[ci].Value = stock.getIndividualRating();
+                }
+
+                if (stock.getType() == 'S' && dc.Name == "Finviz Rank")
+                {
+                    dgv.Rows[ri].Cells[ci].Value = stock.getFinvizRank();
+                }
+
+                ci++;
+            }//end nested foreach
+        }//end populateDataGridViewRow
+
+        private void tsmActualPerformance_Click(object sender, EventArgs e)
+        {
+            try
+            {
+                frmActualPerformance frm = new frmActualPerformance(0, preferences.getPromptDays());
+                if(getDialogResult(frm) == DialogResult.OK)
+                {
+                    preferences.setPromptDays(frm.getPromptDays());
+                }//end if
+                if(preferences.getNextPrompt() <= DateTime.Today)
+                {
+                    frm = new frmActualPerformance();
+                    frm.ShowDialog();
+                    DatabaseAccess dbAccess = new DatabaseAccess();
+                    dbAccess.updateOutlookActualPerformance(preferences.getPreviousPrompt().ToShortDateString(), preferences.getNextPrompt().ToShortDateString(), frm.getPerformance());
                 }
             } catch (Exception ex)
             {
                 errorMessage(ex);
             }
-        }//end getCalcPreferences
-
-        /// <summary>
-        /// Saves the column configuration preferences for each DataGridView in a .xml file.
-        /// </summary>
-        /// <param name="cols"></param>
-        /// <param name="table"></param>
-        private void saveColumnConfiguration(List<string> cols, int table)
-        {
-            try
-            {
-                XmlData xmlData = new XmlData();
-                xmlData.saveColumnPreferences(cols, table);
-            } catch (Exception ex)
-            {
-                errorMessage(ex);
-            }
-        }//end saveColumnConfiguration
-
-        /// <summary>
-        /// Loads the column configuration of each DataGridView if it exists.
-        /// </summary>
-        private List<string> loadColumnConfiguration(bool isSectors = false)
-        {
-            List<string> cols = new List<string>();
-            string path = AppDomain.CurrentDomain.BaseDirectory + @"\preferences\";
-            if (Directory.Exists(path))
-            {
-                XmlData xmlData = new XmlData();
-
-                string file = (isSectors ? "sectorCols.xml" : "marketCols.xml");
-                int i = (isSectors ? 1 : 0);
-
-                if(File.Exists(Path.Combine(path,file)))
-                {
-                    cols = xmlData.loadColumnPreferences(i);
-                    colsLoaded[0] = true;
-                }//end nested if
-            }//end if
-
-            return cols;
-        }//end loadColumnConfiguration
+        }//end tsmActualPerformance_Click
     }//end frmTopDownAnalysis
-}
+}//end namespace

@@ -4,7 +4,7 @@ using System.Linq;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 
-namespace StockTopDownAnalysis
+namespace TopDownAnalysis
 {
     static class Program
     {
@@ -17,6 +17,6 @@ namespace StockTopDownAnalysis
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
             Application.Run(new frmTopDownAnalysis());
-        }
+        }//end Main
     }
 }

@@ -14,8 +14,8 @@ namespace TopDownAnalysis
         private string unexpectedItems;
         private int finvizRank;
         private double individualRating;
-        bool usedInCalculation;
-        char type;
+        private bool usedInCalculation;
+        private char type;
         private List<Note> notes;
         
 
@@ -34,7 +34,6 @@ namespace TopDownAnalysis
             setUnexpectedItems("");
             setFinvizRank(-1);
             setIndividualRating(0.0);
-            setType('M');
             notes = new List<Note>();
         }
 
@@ -106,11 +105,31 @@ namespace TopDownAnalysis
         public double getIndividualRating() { return individualRating; }
         public bool getUsedInCalculation() { return usedInCalculation; }
         public char getType() { return type; }
+        public Note getNoteAtIndex(int i) { return notes[i]; }
         public List<Note> getNotes() { return notes; }
+        public string[] getNoteLines(int i)
+        {
+            return notes[i].getLines();
+        }
+        public string getNoteDispalyString(int i) { return notes[i].getDisplayLine(); }
+        public string getNoteDateString(int i) { return notes[i].getDateString(); }
+        public string getNoteTimeString(int i) { return notes[i].getTimeString(); }
 
         //Set methods
         public void setName(string name) { this.name = name; }
-        public void setSymbol(string symbol) { this.symbol = symbol; }
+        public void setSymbol(string symbol)
+        {
+            for(int i = 0; i < symbol.Length; i++)
+            {
+                if(symbol[i] < 'A' || symbol[i] > 'Z')
+                {
+                    this.symbol = "";
+                } else
+                {
+                    this.symbol = symbol;
+                }//end if-else
+            }//end for
+        }//end setSymbol
         public void setSMA200(string SMA200)
         {
             if(SMA200 == "Up" || SMA200 == "Up and Down" || SMA200 == "Down")
@@ -153,7 +172,7 @@ namespace TopDownAnalysis
         }//end setChartPattern
         public void setUnexpectedItems(string unexpectedItems)
         {
-            if(unexpectedItems == "Good" || unexpectedItems == "Average" || unexpectedItems == "Bad" || unexpectedItems == "Very Bad" || unexpectedItems == "No News")
+            if(unexpectedItems == "Very Good" || unexpectedItems == "Good" || unexpectedItems == "Average" || unexpectedItems == "Bad" || unexpectedItems == "Very Bad" || unexpectedItems == "No News")
             {
                 this.unexpectedItems = unexpectedItems;
             } else
@@ -163,7 +182,7 @@ namespace TopDownAnalysis
         }//end setUnexpectedItems
         public void setFinvizRank(int finvizRank)
         {
-            this.finvizRank = (12 >= finvizRank && finvizRank >= 1 && type == 'S' ? finvizRank : -1);
+            this.finvizRank = (12 >= finvizRank && finvizRank >= 1 && type != 'M' ? finvizRank : -1);
         }//end setFinvizRank
         protected void setIndividualRating(double individualRating)
         {
@@ -187,10 +206,11 @@ namespace TopDownAnalysis
         }//end setType
 
         public void setNotes(List<Note> notes) { this.notes = notes; }
+        public void setNoteLines(string[] lines, int i) { this.notes[i].setLines(lines); }
         public void addNote(Note note)
         {
             notes.Add(note);
-            notes.Sort((a, b) => a.getDateTime().CompareTo(b.getDateTime()));
+            notes.Sort((a, b) => b.getDateTime().CompareTo(a.getDateTime()));
         }
         public void deleteNote(int i) { notes.RemoveAt(i); }
 
@@ -205,7 +225,7 @@ namespace TopDownAnalysis
 
             double rating = (pref.getScore("SMA200", SMA200) + pref.getScore("SMA50/20", SMA50) + pref.getScore("SMA50/20", SMA20)) / 3;
             rating += pref.getScore("CHART_PATTERN", chartPattern) + pref.getScore("UNEXPECTED_ITEMS", unexpectedItems);
-            rating += (finvizRank > -1 ? (11 - finvizRank) : 0);
+            rating += (type == 'S' ? (11 - finvizRank) : 0);
 
             if(pref.getScore("UNEXPECTED_ITEMS", unexpectedItems) > 0)
             {
